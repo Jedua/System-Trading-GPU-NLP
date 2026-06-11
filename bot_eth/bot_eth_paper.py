@@ -24,7 +24,7 @@ STATE_FILE = os.path.join(SCRIPT_DIR, "sim_state_eth.json")
 MODEL_FILE = os.path.join(SCRIPT_DIR, "modelo_ia_eth.json")
 
 # PARAMETROS FIJOS
-VENTANA_APRENDIZAJE = 8000
+VENTANA_APRENDIZAJE = 50000
 MONTO_USDT = 8.0  
 LEVERAGE = 20
 MAX_PERDIDA_DIARIA = -2.5 
@@ -32,8 +32,8 @@ COOLDOWN_SEGUNDOS = 300
 HORA_INICIO_OP = 0   # 00:00 UTC
 HORA_FIN_OP = 24     # 24:00 UTC (Todo el dia)
 
-# COMISIONES BINANCE TAKER/TAKER (0.05% entrada + 0.05% salida) cruzando el spread
-ROUND_TRIP_FEE = 0.0010 
+# COMISIONES BINANCE MAKER/TAKER (0.02% entrada + 0.05% salida) 
+ROUND_TRIP_FEE = 0.0007 
 
 # VARIABLES DINAMICAS
 UMBRAL_CONFIANZA_IA = 0.85 
@@ -326,7 +326,8 @@ class CerebroIA:
     def __init__(self, model_path=MODEL_FILE):
         self.model_path = model_path
         self.model = xgb.XGBClassifier(
-            n_estimators=200, learning_rate=0.03, max_depth=7,
+            n_estimators=80, learning_rate=0.05, max_depth=3,
+            subsample=0.8, colsample_bytree=0.8, reg_alpha=0.5, reg_lambda=0.5,
             tree_method='hist', eval_metric='mlogloss',
             objective='multi:softprob', num_class=3, device='cuda',
             verbosity=0
@@ -399,6 +400,8 @@ class CerebroIA:
             y_fit = y
             
         pesos = compute_sample_weight(class_weight='balanced', y=y_fit)
+        # --- PENALIZACIÓN DE RUIDO ---
+        pesos[y_fit.values == 0] *= 0.5
         if missing_classes:
             pesos[-len(missing_classes):] = 0.0
             
@@ -491,9 +494,9 @@ async def main_loop(db, ia):
 
     confirmaciones_long = 0
     confirmaciones_short = 0
-    TICKS_CONFIRMACION = 4 # 300ms: Filtra el ruido pero no asfixia la entrada
+    TICKS_CONFIRMACION = 1 # Reducido para igualar la agresividad del backtest en CUDA
     confirmaciones_reversal = 0
-    SPREAD_MAXIMO_PCT = 0.0008
+    SPREAD_MAXIMO_PCT = 0.0003 # 3 BPS maximo para evitar deslizamiento fuerte
     
     ticks_procesados = 0
     ultimo_reporte = time.time()
@@ -738,10 +741,17 @@ async def main_loop(db, ia):
 
                     spread_aceptable = spread_pct <= SPREAD_MAXIMO_PCT
 
-                    if prob_up > UMBRAL_CONFIANZA_IA and imbalance > UMBRAL_IMBALANCE and ofi_t > OFI_THRESHOLD and ofi_ema_5_t > OFI_EMA_5_THRESHOLD and spread_aceptable:
+                    # --- FILTROS ESTRICTOS DE SEGURIDAD (HARD FILTERS) ---
+                    filtro_sentiment_long = macro_sentiment_score > -0.20
+                    filtro_sentiment_short = macro_sentiment_score < 0.20
+                    
+                    filtro_tendencia_long = ema_15m_dist >= -0.001 and rsi_5m < 70.0
+                    filtro_tendencia_short = ema_15m_dist <= 0.001 and rsi_5m > 30.0
+
+                    if prob_up > UMBRAL_CONFIANZA_IA and imbalance > UMBRAL_IMBALANCE and ofi_t > OFI_THRESHOLD and ofi_ema_5_t > OFI_EMA_5_THRESHOLD and spread_aceptable and filtro_sentiment_long and filtro_tendencia_long:
                         confirmaciones_long += 1
                         confirmaciones_short = 0
-                    elif prob_down > UMBRAL_CONFIANZA_IA and imbalance < -UMBRAL_IMBALANCE and ofi_t < -OFI_THRESHOLD and ofi_ema_5_t < -OFI_EMA_5_THRESHOLD and spread_aceptable:
+                    elif prob_down > UMBRAL_CONFIANZA_IA and imbalance < -UMBRAL_IMBALANCE and ofi_t < -OFI_THRESHOLD and ofi_ema_5_t < -OFI_EMA_5_THRESHOLD and spread_aceptable and filtro_sentiment_short and filtro_tendencia_short:
                         confirmaciones_short += 1
                         confirmaciones_long = 0
                     else:
@@ -751,7 +761,7 @@ async def main_loop(db, ia):
                     if confirmaciones_long >= TICKS_CONFIRMACION:
                         print(f"\n{Fore.GREEN}[SIM] SENAL LONG CONFIRMADA ({TICKS_CONFIRMACION} ticks continuos)")
                         posicion = 'LONG'
-                        precio_entrada = best_ask # Simula orden TAKER cruzando el spread
+                        precio_entrada = best_bid # Simula orden LIMIT MAKER (se forma en el bid)
                         confirmaciones_long = 0
                         max_pnl_pct = 0.0
                         
@@ -766,7 +776,7 @@ async def main_loop(db, ia):
                     elif confirmaciones_short >= TICKS_CONFIRMACION:
                         print(f"\n{Fore.RED}[SIM] SENAL SHORT CONFIRMADA ({TICKS_CONFIRMACION} ticks continuos)")
                         posicion = 'SHORT'
-                        precio_entrada = best_bid # Simula orden TAKER cruzando el spread
+                        precio_entrada = best_ask # Simula orden LIMIT MAKER (se forma en el ask)
                         confirmaciones_short = 0
                         max_pnl_pct = 0.0
                         
@@ -781,8 +791,11 @@ async def main_loop(db, ia):
 
                 # B) SALIDAS SIMULADAS
                 elif posicion in ['LONG', 'SHORT']:
-                    pnl_pct = (best_bid - precio_entrada) / precio_entrada if posicion == 'LONG' else (precio_entrada - best_ask) / precio_entrada
-                    precio_salida = best_bid if posicion == 'LONG' else best_ask
+                    # Simular Limit Maker Exit (No cruzar el spread)
+                    # Si somos LONG, queremos salir arriba, vendemos en el Ask.
+                    # Si somos SHORT, queremos salir abajo, compramos en el Bid.
+                    precio_salida = best_ask if posicion == 'LONG' else best_bid
+                    pnl_pct = (precio_salida - precio_entrada) / precio_entrada if posicion == 'LONG' else (precio_entrada - precio_salida) / precio_entrada
                     
                     if pnl_pct > max_pnl_pct:
                         max_pnl_pct = pnl_pct
@@ -808,6 +821,7 @@ async def main_loop(db, ia):
                         if confirmaciones_reversal >= TICKS_REVERSAL:
                             should_close = True
                             motivo = "AI_REVERSAL"
+                            # Al salir por pánico, a veces se asume Taker fee para huir rápido. Simularemos Maker igual por coherencia.
                             confirmaciones_reversal = 0
 
                     # 2. SALIDA INTELIGENTE Y ANTI-AVARICIA (TRAILING STOP)
@@ -829,8 +843,8 @@ async def main_loop(db, ia):
                             DISTANCIA_TS_PCT = TAKE_PROFIT_PCT * 0.2 # Persecución más ajustada para no ahogar el R:R
                             
                             if max_pnl_pct >= ACTIVACION_TS_PCT:
-                                # Garantizar cubrir comisiones + spread como minimo de ganancia
-                                piso_ganancia = ROUND_TRIP_FEE + SPREAD_MAXIMO_PCT
+                                # Garantizar cubrir comisiones como minimo de ganancia
+                                piso_ganancia = ROUND_TRIP_FEE 
                                 sl_dinamico = max(piso_ganancia, max_pnl_pct - DISTANCIA_TS_PCT)
                                 
                             if pnl_pct <= sl_dinamico:
@@ -849,7 +863,7 @@ async def main_loop(db, ia):
                         # --- CORTACIRCUITOS DINÁMICO ---
                         if pnl_neto_usd > 0:
                             rachas_perdidas = 0
-                            cooldown_actual = 60
+                            cooldown_actual = 10 # Reducido a 10s para no perder ráfagas de la tendencia
                         else:
                             rachas_perdidas += 1
                             if rachas_perdidas >= 4:

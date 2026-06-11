@@ -52,7 +52,7 @@ def cargar_datos(db_name, limite=900000):
 
 # --- KERNEL CUDA (ESTO CORRE DENTRO DE LA RTX 4070) ---
 @cuda.jit
-def gpu_backtest_kernel(bids, asks, imbs, ofis, ofi_ema_5s, ofi_ema_15s, prob_ups, prob_downs, ema_15m_dists, rsi_5ms, params, results):
+def gpu_backtest_kernel(bids, asks, imbs, ofis, ofi_ema_5s, ofi_ema_15s, prob_ups, prob_downs, ema_15m_dists, rsi_5ms, macro_sentiments, params, results):
     # Identificamos qué hilo (partícula) somos
     idx = cuda.grid(1)
     
@@ -74,7 +74,7 @@ def gpu_backtest_kernel(bids, asks, imbs, ofis, ofi_ema_5s, ofi_ema_15s, prob_up
         losses = 0
         
         # Constantes hardcoded para velocidad en GPU
-        fee_rate = 0.0005
+        fee_rate = 0.00035 # Maker/Maker (aprox 0.035% ida y vuelta)
         leverage = 20.0
         
         ema_fast = 0.0
@@ -113,12 +113,12 @@ def gpu_backtest_kernel(bids, asks, imbs, ofis, ofi_ema_5s, ofi_ema_15s, prob_up
                 closed = False
                 
                 if posicion == 1: # LONG
-                    pnl_pct = (bid - entry_price) / entry_price
+                    pnl_pct = (ask - entry_price) / entry_price
                     if pnl_pct >= tp or pnl_pct <= -sl:
                         closed = True
                         
                 elif posicion == -1: # SHORT
-                    pnl_pct = (entry_price - ask) / entry_price
+                    pnl_pct = (entry_price - bid) / entry_price
                     if pnl_pct >= tp or pnl_pct <= -sl:
                         closed = True
                 
@@ -139,14 +139,16 @@ def gpu_backtest_kernel(bids, asks, imbs, ofis, ofi_ema_5s, ofi_ema_15s, prob_up
 
             # 2. GESTIÓN DE ENTRADA
             if posicion == 0 and is_normal_regime:
-                tendencia_alcista = ema_15m_dists[i] >= 0 and rsi_5ms[i] < 70.0
-                tendencia_bajista = ema_15m_dists[i] <= 0 and rsi_5ms[i] > 30.0
+                sentiment = macro_sentiments[i]
+                tendencia_alcista = ema_15m_dists[i] >= -0.001 and rsi_5ms[i] < 70.0 and sentiment > -0.20
+                tendencia_bajista = ema_15m_dists[i] <= 0.001 and rsi_5ms[i] > 30.0 and sentiment < 0.20
+                
                 if prob_ups[i] > conf_thresh and current_imb > imb_thresh and ofis[i] > ofi_thresh and ofi_ema_5s[i] > ofi_ema_5_thresh and tendencia_alcista:
                     posicion = 1
-                    entry_price = ask
+                    entry_price = bid # Forma límite en el BID
                 elif prob_downs[i] > conf_thresh and current_imb < -imb_thresh and ofis[i] < -ofi_thresh and ofi_ema_5s[i] < -ofi_ema_5_thresh and tendencia_bajista:
                     posicion = -1
-                    entry_price = bid
+                    entry_price = ask # Forma límite en el ASK
         
         # Guardamos resultado
         # Si opera muy poco (<5 trades), castigamos con costo alto
@@ -160,7 +162,7 @@ def gpu_backtest_kernel(bids, asks, imbs, ofis, ofi_ema_5s, ofi_ema_15s, prob_up
             else:
                 results[idx] = -balance
 
-def fitness_function_cuda(params, d_bids, d_asks, d_imbs, d_ofis, d_ofi_ema_5s, d_ofi_ema_15s, d_prob_ups, d_prob_downs, d_ema_15m_dists, d_rsi_5ms):
+def fitness_function_cuda(params, d_bids, d_asks, d_imbs, d_ofis, d_ofi_ema_5s, d_ofi_ema_15s, d_prob_ups, d_prob_downs, d_ema_15m_dists, d_rsi_5ms, d_macro_sentiments):
     n_particles = params.shape[0]
     
     # Reservamos memoria en GPU para los resultados de este lote
@@ -175,7 +177,7 @@ def fitness_function_cuda(params, d_bids, d_asks, d_imbs, d_ofis, d_ofi_ema_5s, 
     blocks_per_grid = (n_particles + (threads_per_block - 1)) // threads_per_block
     
     # LANZAMIENTO DEL KERNEL
-    gpu_backtest_kernel[blocks_per_grid, threads_per_block](d_bids, d_asks, d_imbs, d_ofis, d_ofi_ema_5s, d_ofi_ema_15s, d_prob_ups, d_prob_downs, d_ema_15m_dists, d_rsi_5ms, d_params, d_results)
+    gpu_backtest_kernel[blocks_per_grid, threads_per_block](d_bids, d_asks, d_imbs, d_ofis, d_ofi_ema_5s, d_ofi_ema_15s, d_prob_ups, d_prob_downs, d_ema_15m_dists, d_rsi_5ms, d_macro_sentiments, d_params, d_results)
     
     # Esperamos a la GPU
     cuda.synchronize()
@@ -287,7 +289,7 @@ def optimizar_moneda(simbolo, db_file):
     print(f"\n{Fore.CYAN}Data en VRAM: {dias_totales:.1f} dias ({len(df)} ticks)")
 
     # FIX ABSOLUTO: Asegurar columnas ANTES de cualquier cruce
-    for col in ['cvd', 'liq_longs', 'liq_shorts', 'ema_15m_dist', 'rsi_5m']:
+    for col in ['cvd', 'liq_longs', 'liq_shorts', 'ema_15m_dist', 'rsi_5m', 'macro_sentiment']:
         if col not in df.columns: df[col] = 0.0
         else: df[col] = df[col].fillna(0.0)
 
@@ -348,6 +350,7 @@ def optimizar_moneda(simbolo, db_file):
     d_prob_downs = cuda.to_device(prob_downs.astype(np.float64))
     d_ema_15m_dists = cuda.to_device(df['ema_15m_dist'].to_numpy().astype(np.float64))
     d_rsi_5ms = cuda.to_device(df['rsi_5m'].to_numpy().astype(np.float64))
+    d_macro_sentiments = cuda.to_device(df['macro_sentiment'].to_numpy().astype(np.float64))
     # ---------------------------
 
     # --- LIMITES MEJORADOS (MAYOR WIN RATE) ---
@@ -361,7 +364,7 @@ def optimizar_moneda(simbolo, db_file):
     )
     
     result = differential_evolution(
-        lambda p: fitness_function_cuda(np.ascontiguousarray(p.T), d_bids, d_asks, d_imbs, d_ofis, d_ofi_ema_5s, d_ofi_ema_15s, d_prob_ups, d_prob_downs, d_ema_15m_dists, d_rsi_5ms),
+        lambda p: fitness_function_cuda(np.ascontiguousarray(p.T), d_bids, d_asks, d_imbs, d_ofis, d_ofi_ema_5s, d_ofi_ema_15s, d_prob_ups, d_prob_downs, d_ema_15m_dists, d_rsi_5ms, d_macro_sentiments),
         bounds=bounds,
         strategy='best1bin',
         maxiter=50,
@@ -386,6 +389,7 @@ def optimizar_moneda(simbolo, db_file):
     d_prob_downs = None
     d_ema_15m_dists = None
     d_rsi_5ms = None
+    d_macro_sentiments = None
     
     if cost >= 400000: # Rechaza si el costo tiene la penalizacion de Win Rate (500k) o falta de trades (1M)
         print(f"{Fore.RED}[WARNING] {simbolo}: No rentable.")
