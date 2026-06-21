@@ -1,0 +1,37 @@
+{"timestamp": "2026-06-18T00:27:21.334905Z", "level": "INFO", "type": "SYSTEM_START", "msg": "Iniciando simulacion ETH.", "meta": {}}
+{"timestamp": "2026-06-18T01:03:12.500582Z", "level": "ERROR", "type": "NETWORK_ZOMBIE", "msg": "Timeout en WS de Binance. Reconectando.", "meta": {}}
+{"timestamp": "2026-06-18T01:03:12.501971Z", "level": "WARNING", "type": "NETWORK_DISCONNECT", "msg": "Conexion WS cerrada por el servidor.", "meta": {}}
+{"timestamp": "2026-06-18T01:03:21.616999Z", "level": "INFO", "type": "SYSTEM_START", "msg": "Iniciando simulacion ETH.", "meta": {}}
+{"timestamp": "2026-06-18T01:03:38.429221Z", "level": "ERROR", "type": "NETWORK_ZOMBIE", "msg": "Timeout en WS de Binance. Reconectando.", "meta": {}}
+{"timestamp": "2026-06-18T01:03:38.440304Z", "level": "WARNING", "type": "NETWORK_DISCONNECT", "msg": "Conexion WS cerrada por el servidor.", "meta": {}}
+{"timestamp": "2026-06-18T01:03:56.581419Z", "level": "INFO", "type": "SYSTEM_START", "msg": "Iniciando simulacion ETH.", "meta": {}}
+{"timestamp": "2026-06-18T01:05:23.389795Z", "level": "WARNING", "type": "NETWORK_DISCONNECT", "msg": "Conexion WS cerrada por el servidor.", "meta": {}}
+{"timestamp": "2026-06-18T01:05:31.565871Z", "level": "INFO", "type": "SYSTEM_START", "msg": "Iniciando simulacion ETH.", "meta": {}}
+{"timestamp": "2026-06-18T01:06:06.028027Z", "level": "WARNING", "type": "NETWORK_DISCONNECT", "msg": "Conexion WS cerrada por el servidor.", "meta": {}}
+{"timestamp": "2026-06-18T01:06:16.581622Z", "level": "INFO", "type": "SYSTEM_START", "msg": "Iniciando simulacion ETH.", "meta": {}}
+{"timestamp": "2026-06-18T01:07:20.478431Z", "level": "WARNING", "type": "NETWORK_DISCONNECT", "msg": "Conexion WS cerrada por el servidor.", "meta": {}}
+{"timestamp": "2026-06-18T01:07:31.622964Z", "level": "INFO", "type": "SYSTEM_START", "msg": "Iniciando simulacion ETH.", "meta": {}}
+{"timestamp": "2026-06-18T01:08:30.657792Z", "level": "WARNING", "type": "NETWORK_DISCONNECT", "msg": "Conexion WS cerrada por el servidor.", "meta": {}}
+{"timestamp": "2026-06-18T01:08:36.606104Z", "level": "INFO", "type": "SYSTEM_START", "msg": "Iniciando simulacion ETH.", "meta": {}}
+{"timestamp": "2026-06-18T02:26:28.381820Z", "level": "ERROR", "type": "MTF_FETCH_ERROR", "msg": "Error fetching MTF data: HTTPSConnectionPool(host='fapi.binance.com', port=443): Read timed out. (read timeout=5)", "meta": {}}
+{"timestamp": "2026-06-18T03:25:21.789071Z", "level": "WARNING", "type": "RISK_PAUSA", "msg": "Pausa tras perdida. Cooldown: 60s", "meta": {}}
+{"timestamp": "2026-06-18T03:25:21.789784Z", "level": "INFO", "type": "TRADE_EXIT", "msg": "Cierre por TIME_STOP", "meta": {"exit_price": 1747.21, "pnl_pct": -0.00255, "pnl_usd": -0.6244, "max_pnl": 0.00051, "duracion_seg": 900.1}}
+{"timestamp": "2026-06-18T03:25:21.790364Z", "level": "INFO", "type": "TRADE_SUMMARY", "msg": "Trade LOSS: LONG from 1751.68 to 1747.21", "meta": {"type": "LONG", "entry_price": 1751.68, "exit_price": 1747.21, "pnl_pct": -0.0025518359517720285, "pnl_usd": -0.6243525027402295, "result": "LOSS"}}
+{"timestamp": "2026-06-18T04:21:07.994955Z", "level": "INFO", "type": "TRADE_EXIT", "msg": "Cierre por TRAILING_STOP", "meta": {"exit_price": 1732.46, "pnl_pct": 0.00315, "pnl_usd": 0.5874, "max_pnl": 0.00448, "duracion_seg": 249.4}}
+{"timestamp": "2026-06-18T04:21:07.995956Z", "level": "INFO", "type": "TRADE_SUMMARY", "msg": "Trade WIN: SHORT from 1737.93 to 1732.46", "meta": {"type": "SHORT", "entry_price": 1737.93, "exit_price": 1732.46, "pnl_pct": 0.0031474225083864293, "pnl_usd": 0.587381402012743, "result": "WIN"}}
+{"timestamp": "2026-06-18T04:41:04.844792Z", "level": "INFO", "type": "TRADE_EXIT", "msg": "Cierre por TIME_STOP", "meta": {"exit_price": 1732.75, "pnl_pct": 0.00244, "pnl_usd": 0.4178, "max_pnl": 0.00264, "duracion_seg": 900.1}}
+{"timestamp": "2026-06-18T04:41:04.846168Z", "level": "INFO", "type": "TRADE_SUMMARY", "msg": "Trade WIN: SHORT from 1736.99 to 1732.75", "meta": {"type": "SHORT", "entry_price": 1736.99, "exit_price": 1732.75, "pnl_pct": 0.002441004266000385, "pnl_usd": 0.41784102384009236, "result": "WIN"}}
+{"timestamp": "2026-06-18T05:54:32.453485Z", "level": "ERROR", "type": "NETWORK_ZOMBIE", "msg": "Timeout en WS de Binance. Reconectando.", "meta": {}}
+{"timestamp": "2026-06-18T05:54:32.454599Z", "level": "WARNING", "type": "NETWORK_DISCONNECT", "msg": "Conexion WS cerrada por el servidor.", "meta": {}}
+{"timestamp": "2026-06-18T05:55:33.090441Z", "level": "INFO", "type": "SYSTEM_START", "msg": "Iniciando simulacion ETH.", "meta": {}}
+{"timestamp": "2026-06-18T06:01:12.704934Z", "level": "INFO", "type": "TRADE_EXIT", "msg": "Cierre por SMART_TP", "meta": {"exit_price": 1727.91, "pnl_pct": 0.00523, "pnl_usd": 1.0866, "max_pnl": 0.00523, "duracion_seg": 5707.9}}
+{"timestamp": "2026-06-18T06:01:12.706423Z", "level": "INFO", "type": "TRADE_SUMMARY", "msg": "Trade WIN: SHORT from 1736.99 to 1727.91", "meta": {"type": "SHORT", "entry_price": 1736.99, "exit_price": 1727.91, "pnl_pct": 0.005227433663981904, "pnl_usd": 1.0865840793556572, "result": "WIN"}}
+{"timestamp": "2026-06-18T06:44:32.996435Z", "level": "WARNING", "type": "RISK_PAUSA", "msg": "Pausa tras perdida. Cooldown: 60s", "meta": {}}
+{"timestamp": "2026-06-18T06:44:32.997838Z", "level": "INFO", "type": "TRADE_EXIT", "msg": "Cierre por TIME_STOP", "meta": {"exit_price": 1734.7, "pnl_pct": -0.00279, "pnl_usd": -0.5587, "max_pnl": 0.00039, "duracion_seg": 900.1}}
+{"timestamp": "2026-06-18T06:44:32.998839Z", "level": "INFO", "type": "TRADE_SUMMARY", "msg": "Trade LOSS: SHORT from 1729.87 to 1734.70", "meta": {"type": "SHORT", "entry_price": 1729.87, "exit_price": 1734.7, "pnl_pct": -0.0027921173267356244, "pnl_usd": -0.5587387722777, "result": "LOSS"}}
+{"timestamp": "2026-06-18T12:15:02.111532Z", "level": "WARNING", "type": "RISK_PAUSA", "msg": "Pausa tras perdida. Cooldown: 120s", "meta": {}}
+{"timestamp": "2026-06-18T12:15:02.112533Z", "level": "INFO", "type": "TRADE_EXIT", "msg": "Cierre por TIME_STOP", "meta": {"exit_price": 1744.55, "pnl_pct": -0.00086, "pnl_usd": -0.2497, "max_pnl": 0.00127, "duracion_seg": 900.0}}
+{"timestamp": "2026-06-18T12:15:02.122535Z", "level": "INFO", "type": "TRADE_SUMMARY", "msg": "Trade LOSS: SHORT from 1743.05 to 1744.55", "meta": {"type": "SHORT", "entry_price": 1743.05, "exit_price": 1744.55, "pnl_pct": -0.000860560511746651, "pnl_usd": -0.24968968187946416, "result": "LOSS"}}
+{"timestamp": "2026-06-18T12:58:56.383248Z", "level": "WARNING", "type": "RISK_PAUSA", "msg": "Pausa tras perdida. Cooldown: 180s", "meta": {}}
+{"timestamp": "2026-06-18T12:58:56.384266Z", "level": "INFO", "type": "TRADE_EXIT", "msg": "Cierre por TIME_STOP", "meta": {"exit_price": 1749.47, "pnl_pct": -0.00126, "pnl_usd": -0.3135, "max_pnl": 0.00084, "duracion_seg": 900.2}}
+{"timestamp": "2026-06-18T12:58:56.384883Z", "level": "INFO", "type": "TRADE_SUMMARY", "msg": "Trade LOSS: SHORT from 1747.27 to 1749.47", "meta": {"type": "SHORT", "entry_price": 1747.27, "exit_price": 1749.47, "pnl_pct": -0.0012591070641629774, "pnl_usd": -0.3134571302660764, "result": "LOSS"}}

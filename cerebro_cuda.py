@@ -74,7 +74,7 @@ def gpu_backtest_kernel(bids, asks, imbs, ofis, ofi_ema_5s, ofi_ema_15s, prob_up
         losses = 0
         
         # Constantes hardcoded para velocidad en GPU
-        fee_rate = 0.00035 # Maker/Maker (aprox 0.035% ida y vuelta)
+        fee_rate = 0.00035 # Maker(0.02%)/Taker(0.05%) promedio -> 0.07% total (0.035 * 2)
         leverage = 20.0
         
         ema_fast = 0.0
@@ -113,12 +113,12 @@ def gpu_backtest_kernel(bids, asks, imbs, ofis, ofi_ema_5s, ofi_ema_15s, prob_up
                 closed = False
                 
                 if posicion == 1: # LONG
-                    pnl_pct = (ask - entry_price) / entry_price
+                    pnl_pct = (bid - entry_price) / entry_price # Sale cruzando el spread (vendiendo al Bid)
                     if pnl_pct >= tp or pnl_pct <= -sl:
                         closed = True
                         
                 elif posicion == -1: # SHORT
-                    pnl_pct = (entry_price - bid) / entry_price
+                    pnl_pct = (entry_price - ask) / entry_price # Sale cruzando el spread (comprando al Ask)
                     if pnl_pct >= tp or pnl_pct <= -sl:
                         closed = True
                 
@@ -218,8 +218,9 @@ def entrenar_y_predecir_ia(df):
     
     merged = merged.dropna(subset=['future_bid', 'future_ask'])
     
-    # Relajado a 0.15% para que la IA encuentre multiples oportunidades en mercados laterales
-    MIN_PROFIT_PCT = 0.0015 
+    # Sincronizado a 0.25% para que la IA este alineada con los TP del bot
+    MIN_PROFIT_PCT = 0.0025 
+    MIN_PROFIT_PCT = 0.0050 # Sincronizado con el nuevo TP minimo del optimizador
     
     # Para un LONG, entramos en 'best_ask'. El exito es salir en 'future_bid' por encima de nuestra entrada + profit.
     umbral_subida = merged['best_ask'] * (1 + MIN_PROFIT_PCT)
@@ -353,10 +354,10 @@ def optimizar_moneda(simbolo, db_file):
     d_macro_sentiments = cuda.to_device(df['macro_sentiment'].to_numpy().astype(np.float64))
     # ---------------------------
 
-    # --- LIMITES MEJORADOS (MAYOR WIN RATE) ---
+    # --- LIMITES MEJORADOS (MAYOR WIN RATE Y MEJOR R:R) ---
     bounds = (
-        (0.0030, 0.0060), # TP (0.30% a 0.60%) - Micro-ganancias rápidas
-        (0.0100, 0.0250), # SL (1.00% a 2.50%) - Evita stop outs por ruido
+        (0.0020, 0.0060), # TP (0.20% a 0.60%) - Sincronizado con la IA
+        (0.0050, 0.0120), # SL (0.50% a 1.20%) - Limitar el riesgo para no desangrar la cuenta
         (0.15, 0.40),
         (0.65, 0.95), # Mínimo 0.65 IA Conf para buscar más volumen de operaciones
         (0.05, 0.5),

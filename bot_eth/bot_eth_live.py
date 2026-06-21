@@ -13,6 +13,11 @@ from colorama import Fore, Style, init
 from datetime import datetime
 import warnings
 from sklearn.utils.class_weight import compute_sample_weight
+from dotenv import load_dotenv
+import math
+from binance.client import Client
+from binance.enums import *
+from binance.exceptions import BinanceAPIException
 
 # Add parent directory to sys.path to allow absolute imports
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -20,16 +25,85 @@ PARENT_DIR = os.path.dirname(SCRIPT_DIR)
 if PARENT_DIR not in sys.path:
     sys.path.insert(0, PARENT_DIR)
 
+load_dotenv(os.path.join(PARENT_DIR, ".env"))
+
+API_KEY = os.getenv("BINANCE_API_KEY")
+API_SECRET = os.getenv("BINANCE_API_SECRET")
+
+try:
+    binance_client = Client(API_KEY, API_SECRET)
+    print(f"{Fore.GREEN}[BINANCE] Cliente inicializado.")
+except Exception as e:
+    print(f"{Fore.RED}[BINANCE ERROR] Error iniciando cliente: {e}")
+    sys.exit(1)
+
 from bot_core import cargar_configuracion, log_terminal_event, registrar_trade_log, guardar_estado_simulacion, cargar_estado_simulacion, MarketRegime, GestorDB, fetch_mtf_data, CerebroIA, read_sentiment, UMBRAL_CONFIANZA_IA, TAKE_PROFIT_PCT, STOP_LOSS_PCT, UMBRAL_IMBALANCE, OFI_THRESHOLD, OFI_EMA_5_THRESHOLD, VENTANA_APRENDIZAJE, MONTO_USDT, LEVERAGE, MAX_PERDIDA_DIARIA, COOLDOWN_SEGUNDOS, HORA_INICIO_OP, HORA_FIN_OP, ROUND_TRIP_FEE, TICKS_CONFIRMACION, SPREAD_MAXIMO_PCT, ACTIVACION_BE_PCT, ACTIVACION_TS_PCT, DISTANCIA_TS_PCT
+
+def obtener_posicion_abierta(symbol):
+    try:
+        positions = binance_client.futures_position_information(symbol=symbol)
+        for pos in positions:
+            if pos['symbol'] == symbol:
+                return abs(float(pos['positionAmt']))
+    except Exception as e:
+        print(f"{Fore.RED}[BINANCE ERROR] No se pudo obtener la posicion para {symbol}: {e}")
+    return 0.0
+
+def ejecutar_orden_mercado(symbol, side, qty, reduce_only=False):
+    try:
+        # Redondear a 3 decimales para ETH
+        qty_rounded = round(qty, 3)
+        order = binance_client.futures_create_order(
+            symbol=symbol,
+            side=side,
+            type=ORDER_TYPE_MARKET,
+            quantity=qty_rounded,
+            reduceOnly=reduce_only
+        )
+        print(f"{Fore.GREEN}[BINANCE EXITO] Orden {side} enviada: {qty_rounded} {symbol} (Reduce: {reduce_only})")
+        return order
+    except BinanceAPIException as e:
+        print(f"{Fore.RED}[BINANCE ERROR] API rechazo orden {side}: {e}")
+        return None
+    except Exception as e:
+        print(f"{Fore.RED}[BINANCE ERROR] Error interno enviando orden {side}: {e}")
+        return None
+
+def ejecutar_stop_market(symbol, side, stop_price):
+    try:
+        stop_price_rounded = round(stop_price, 2)
+        order = binance_client.futures_create_order(
+            symbol=symbol,
+            side=side,
+            type=ORDER_TYPE_STOP_MARKET,
+            closePosition=True,
+            stopPrice=stop_price_rounded
+        )
+        print(f"{Fore.MAGENTA}[BINANCE EXITO] Stop Loss de seguridad activado en {stop_price_rounded}")
+        return order
+    except BinanceAPIException as e:
+        print(f"{Fore.RED}[BINANCE ERROR] API rechazo STOP_MARKET {side}: {e}")
+        return None
+    except Exception as e:
+        print(f"{Fore.RED}[BINANCE ERROR] Error interno enviando STOP_MARKET {side}: {e}")
+        return None
+
+def cancelar_todas_las_ordenes(symbol):
+    try:
+        binance_client.futures_cancel_all_open_orders(symbol=symbol)
+        print(f"{Fore.CYAN}[BINANCE] Ordenes abiertas canceladas para {symbol}")
+    except Exception as e:
+        print(f"{Fore.RED}[BINANCE ERROR] Error cancelando ordenes: {e}")
 
 # --- CONFIGURACION ---
 SYMBOL_WSS = 'ethusdt'  
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 DB_NAME = os.path.join(SCRIPT_DIR, "cerebro_eth.db")
 CONFIG_FILE = os.path.join(SCRIPT_DIR, "..", "config_params.json")
-PAPER_LOG_FILE = os.path.join(SCRIPT_DIR, "paper_trading_log.txt")
-PAPER_STATE_FILE = os.path.join(SCRIPT_DIR, "sim_state_eth.json")
-PAPER_MODEL_FILE = os.path.join(SCRIPT_DIR, "modelo_ia_eth.json")
-PAPER_TERMINAL_LOG_FILE = os.path.join(SCRIPT_DIR, "log_terminal_data.json")
+LIVE_LOG_FILE = os.path.join(SCRIPT_DIR, "live_trading_log.txt")
+LIVE_STATE_FILE = os.path.join(SCRIPT_DIR, "live_state_eth.json")
+LIVE_MODEL_FILE = os.path.join(SCRIPT_DIR, "modelo_ia_eth.json")
+LIVE_TERMINAL_LOG_FILE = os.path.join(SCRIPT_DIR, "live_log_terminal_data.json")
 
 init(autoreset=True)
 warnings.filterwarnings('ignore')
@@ -37,7 +111,7 @@ warnings.filterwarnings('ignore')
 # --- MOTOR PRINCIPAL ---
 async def main_loop(db, ia):
     print(f"{Fore.MAGENTA}=====================================================")
-    print(f"{Fore.MAGENTA} [SISTEMA] ETHEREUM BOT - PAPER TRADING (SIMULACION)")
+    print(f"{Fore.RED}{Style.BRIGHT} [SISTEMA] ETHEREUM BOT - LIVE TRADING (DINERO REAL){Style.RESET_ALL}")
     print(f"{Fore.MAGENTA}=====================================================")
     
     # Variables de Flujo y MTF
@@ -52,11 +126,11 @@ async def main_loop(db, ia):
     cargar_configuracion(CONFIG_FILE)
     print(f"[CONFIG] IA {UMBRAL_CONFIANZA_IA} | IMB {UMBRAL_IMBALANCE} | TP {TAKE_PROFIT_PCT*100:.2f}% | SL {STOP_LOSS_PCT*100:.2f}% | OFI {OFI_THRESHOLD} | EMA5 {OFI_EMA_5_THRESHOLD}")
     
-    if not os.path.exists(PAPER_LOG_FILE):
-        with open(PAPER_LOG_FILE, "w") as f:
+    if not os.path.exists(LIVE_LOG_FILE):
+        with open(LIVE_LOG_FILE, "w") as f:
             f.write(f"--- INICIO DE PAPER TRADING LOG ({datetime.now().strftime('%Y-%m-%d %H:%M:%S')}) ---\n")
-    log_terminal_event("INFO", "SYSTEM_START", "Iniciando simulacion ETH.", PAPER_TERMINAL_LOG_FILE)
-    print(f"[LOGS] Guardando en: {PAPER_LOG_FILE}")
+    log_terminal_event("INFO", "SYSTEM_START", "Iniciando bot ETH en modo LIVE.", LIVE_TERMINAL_LOG_FILE)
+    print(f"[LOGS] Guardando en: {LIVE_LOG_FILE}")
 
     # --- VARIABLES DE ESTADO PARA OFI Y EMA ---
     prev_best_bid = None
@@ -73,7 +147,7 @@ async def main_loop(db, ia):
     alpha_15 = 2 / (span_15 + 1)
     
     regime_detector = MarketRegime() # From bot_core
-    posicion, precio_entrada, max_pnl_pct, pnl_acumulado, trades_totales, monto_invertido, rachas_perdidas, timestamp_entrada, confianza_ia = cargar_estado_simulacion(PAPER_STATE_FILE) # From bot_core
+    posicion, precio_entrada, max_pnl_pct, pnl_acumulado, trades_totales, monto_invertido, rachas_perdidas, timestamp_entrada, confianza_ia = cargar_estado_simulacion(LIVE_STATE_FILE) # From bot_core
     cooldown_actual = rachas_perdidas * COOLDOWN_SEGUNDOS if rachas_perdidas > 0 else 0
     
     confirmaciones_long = 0
@@ -117,15 +191,15 @@ async def main_loop(db, ia):
                 # Leer sentimiento cada 5 segundos
                 if time.time() - last_sentiment_read > 5:
                     loop = asyncio.get_event_loop()
-                    macro_sentiment_score = await loop.run_in_executor(None, read_sentiment, SENTIMENT_FILE_PATH, PAPER_TERMINAL_LOG_FILE)
+                    macro_sentiment_score = await loop.run_in_executor(None, read_sentiment, SENTIMENT_FILE_PATH, LIVE_TERMINAL_LOG_FILE) # Using bot_core's read_sentiment
                     last_sentiment_read = time.time()
 
                 # Actualizar MTF Context cada 60s
                 if time.time() - last_mtf_update > 60:
                     loop = asyncio.get_event_loop()
-                    mtf_res = await loop.run_in_executor(None, fetch_mtf_data, SYMBOL_WSS.upper(), PAPER_TERMINAL_LOG_FILE)
-                    if mtf_res[0] is not None: # From bot_core
-                        ema_15m, rsi_5m, atr_5m = mtf_res
+                    mtf_res = await loop.run_in_executor(None, fetch_mtf_data, SYMBOL_WSS.upper())
+                    if mtf_res[0] is not None:
+                        ema_15m, rsi_5m, atr_5m = mtf_res # From bot_core
                     else:
                         atr_5m = 0.0
                     last_mtf_update = time.time()
@@ -138,7 +212,7 @@ async def main_loop(db, ia):
                     msg = await asyncio.wait_for(ws.recv(), timeout=10.0)
                 except asyncio.TimeoutError:
                     print(f"\n{Fore.RED}[ALERTA ZOMBIE] Reiniciando conexion simulada...")
-                    log_terminal_event("ERROR", "NETWORK_ZOMBIE", "Timeout en WS de Binance. Reconectando.", PAPER_TERMINAL_LOG_FILE)
+                    log_terminal_event("ERROR", "NETWORK_ZOMBIE", "Timeout en WS de Binance. Reconectando.", LIVE_TERMINAL_LOG_FILE)
                     raise asyncio.TimeoutError("Zombie Timeout") # Re-raise to break and reconnect
 
                 json_data = json.loads(msg)
@@ -333,11 +407,7 @@ async def main_loop(db, ia):
                         confirmaciones_short = 0
 
                     if confirmaciones_long >= TICKS_CONFIRMACION:
-                        print(f"\n{Fore.GREEN}[SIM] SENAL LONG CONFIRMADA ({TICKS_CONFIRMACION} ticks continuos)")
-                        posicion = 'LONG'
-                        precio_entrada = best_ask # Simula orden MARKET TAKER (paga spread)
-                        confirmaciones_long = 0
-                        max_pnl_pct = 0.0
+                        print(f"\n{Fore.GREEN}[LIVE] SENAL LONG CONFIRMADA ({TICKS_CONFIRMACION} ticks continuos)")
                         
                         # --- POSITION SIZING DINAMICO ---
                         monto_invertido = MONTO_USDT
@@ -345,24 +415,37 @@ async def main_loop(db, ia):
                         elif prob_up > 0.90: monto_invertido = MONTO_USDT * 1.2 # Aumento leve
                         if monto_invertido > MONTO_USDT: print(f"{Fore.CYAN}⚖️ Apalancando ${monto_invertido:.2f} USDT por Confianza IA alta.")
                         
-                        timestamp_entrada = time.time()
+                        qty = (monto_invertido * LEVERAGE) / mid_price
+                        loop = asyncio.get_event_loop()
+                        orden = await loop.run_in_executor(None, ejecutar_orden_mercado, "ETHUSDT", "BUY", qty)
+                        
+                        if orden:
+                            posicion = 'LONG'
+                            precio_entrada = float(orden.get('avgPrice', best_ask)) # Taker entry
+                            if precio_entrada == 0: precio_entrada = best_ask
+                            confirmaciones_long = 0
+                            max_pnl_pct = 0.0
+                            timestamp_entrada = time.time()
+                            
+                            # --- ENVIAR STOP LOSS FISICO A BINANCE ---
+                            sl_price = precio_entrada * (1 - STOP_LOSS_PCT) # Use STOP_LOSS_PCT from bot_core
+                            # Esperar un instante corto para asegurar que la posicion este registrada
+                            await asyncio.sleep(0.5) 
+                            await loop.run_in_executor(None, ejecutar_stop_market, "ETHUSDT", "SELL", sl_price)
                         
                         # Guardar radiografia de la entrada
-                        log_terminal_event("INFO", "TRADE_ENTRY", f"LONG a {precio_entrada}", PAPER_TERMINAL_LOG_FILE, {
+                        log_terminal_event("INFO", "TRADE_ENTRY", f"LONG a {precio_entrada}", {
                             "prob_up": round(prob_up, 4), "prob_down": round(prob_down, 4),
+                            "entry_price": precio_entrada,
                             "imbalance": round(imbalance, 4), "ofi": round(ofi_t, 2), 
                             "cvd_ema": round(cvd_ema, 2), "rsi": round(rsi_5m, 2),
                             "spread": spread_pct, "monto": monto_invertido,
                             "regimen": regimen_actual, "sentiment": macro_sentiment_score
                         })
                         
-                        guardar_estado_simulacion(PAPER_STATE_FILE, posicion, precio_entrada, max_pnl_pct, pnl_acumulado, trades_totales, monto_invertido, rachas_perdidas, timestamp_entrada, prob_up)
+                        guardar_estado_simulacion(LIVE_STATE_FILE, posicion, precio_entrada, max_pnl_pct, pnl_acumulado, trades_totales, monto_invertido, rachas_perdidas, timestamp_entrada, prob_up)
                     elif confirmaciones_short >= TICKS_CONFIRMACION:
-                        print(f"\n{Fore.RED}[SIM] SENAL SHORT CONFIRMADA ({TICKS_CONFIRMACION} ticks continuos)")
-                        posicion = 'SHORT'
-                        precio_entrada = best_bid # Simula orden MARKET TAKER (paga spread)
-                        confirmaciones_short = 0
-                        max_pnl_pct = 0.0
+                        print(f"\n{Fore.RED}[LIVE] SENAL SHORT CONFIRMADA ({TICKS_CONFIRMACION} ticks continuos)")
                         
                         # --- POSITION SIZING DINAMICO ---
                         monto_invertido = MONTO_USDT
@@ -370,18 +453,35 @@ async def main_loop(db, ia):
                         elif prob_down > 0.90: monto_invertido = MONTO_USDT * 1.2 # Aumento leve
                         if monto_invertido > MONTO_USDT: print(f"{Fore.CYAN}⚖️ Apalancando ${monto_invertido:.2f} USDT por Confianza IA alta.")
                         
-                        timestamp_entrada = time.time()
+                        qty = (monto_invertido * LEVERAGE) / mid_price
+                        loop = asyncio.get_event_loop()
+                        orden = await loop.run_in_executor(None, ejecutar_orden_mercado, "ETHUSDT", "SELL", qty)
+                        
+                        if orden:
+                            posicion = 'SHORT'
+                            precio_entrada = float(orden.get('avgPrice', best_bid)) # Taker entry
+                            if precio_entrada == 0: precio_entrada = best_bid
+                            confirmaciones_short = 0
+                            max_pnl_pct = 0.0
+                            timestamp_entrada = time.time()
+                            
+                            # --- ENVIAR STOP LOSS FISICO A BINANCE ---
+                            sl_price = precio_entrada * (1 + STOP_LOSS_PCT) # Use STOP_LOSS_PCT from bot_core
+                            # Esperar un instante corto para asegurar que la posicion este registrada
+                            await asyncio.sleep(0.5) 
+                            await loop.run_in_executor(None, ejecutar_stop_market, "ETHUSDT", "BUY", sl_price)
                         
                         # Guardar radiografia de la entrada
-                        log_terminal_event("INFO", "TRADE_ENTRY", f"SHORT a {precio_entrada}", PAPER_TERMINAL_LOG_FILE, {
+                        log_terminal_event("INFO", "TRADE_ENTRY", f"SHORT a {precio_entrada}", {
                             "prob_up": round(prob_up, 4), "prob_down": round(prob_down, 4),
+                            "entry_price": precio_entrada,
                             "imbalance": round(imbalance, 4), "ofi": round(ofi_t, 2), 
                             "cvd_ema": round(cvd_ema, 2), "rsi": round(rsi_5m, 2),
                             "spread": spread_pct, "monto": monto_invertido,
                             "regimen": regimen_actual, "sentiment": macro_sentiment_score
                         })
                         
-                        guardar_estado_simulacion(PAPER_STATE_FILE, posicion, precio_entrada, max_pnl_pct, pnl_acumulado, trades_totales, monto_invertido, rachas_perdidas, timestamp_entrada, prob_down)
+                        guardar_estado_simulacion(LIVE_STATE_FILE, posicion, precio_entrada, max_pnl_pct, pnl_acumulado, trades_totales, monto_invertido, rachas_perdidas, timestamp_entrada, prob_down)
 
                 # B) SALIDAS SIMULADAS
                 elif posicion in ['LONG', 'SHORT']:
@@ -444,17 +544,17 @@ async def main_loop(db, ia):
                         else:
                             sl_dinamico = -STOP_LOSS_PCT
                             
-                            # --- 2.1 BREAK-EVEN AUTOMATICO ---
-                            # Si ganamos más de un 0.30%, protegemos la operacion cobrando comisiones minimo
-                            ACTIVACION_BE_PCT = 0.0030 
-                            if max_pnl_pct >= ACTIVACION_BE_PCT:
+                            # --- 2.1 BREAK-EVEN AUTOMATICO --- # From bot_core
+                            # Si ganamos más de un 0.30%, protegemos la operacion cobrando comisiones minimo # From bot_core
+                            # ACTIVACION_BE_PCT = 0.0030 # From bot_core
+                            if max_pnl_pct >= ACTIVACION_BE_PCT: # From bot_core
                                 sl_dinamico = ROUND_TRIP_FEE * 1.5 # Colchon extra para garantizar 0 perdidas reales
                             
-                            # --- 2.2 TRAILING STOP ---
-                            ACTIVACION_TS_PCT = TAKE_PROFIT_PCT * 0.80 # Exigir 80% de ganancia antes de perseguir
-                            DISTANCIA_TS_PCT = TAKE_PROFIT_PCT * 0.25 # Distancia para no ahogar el trade
+                            # --- 2.2 TRAILING STOP --- # From bot_core
+                            # ACTIVACION_TS_PCT = TAKE_PROFIT_PCT * 0.80 # Exigir 80% de ganancia antes de perseguir # From bot_core
+                            # DISTANCIA_TS_PCT = TAKE_PROFIT_PCT * 0.25 # Distancia para no ahogar el trade # From bot_core
                             
-                            if max_pnl_pct >= ACTIVACION_TS_PCT:
+                            if max_pnl_pct >= ACTIVACION_TS_PCT: # From bot_core
                                 piso_ganancia = max(ROUND_TRIP_FEE * 1.5, sl_dinamico)
                                 sl_dinamico = max(piso_ganancia, max_pnl_pct - DISTANCIA_TS_PCT)
                                 
@@ -465,62 +565,81 @@ async def main_loop(db, ia):
                                 else: motivo = "SL"
                         
                     if should_close:
-                        color = Fore.GREEN if motivo == "HARD_TP" else (Fore.YELLOW if motivo == "SMART_TP" else (Fore.LIGHTRED_EX if motivo in ["AI_REVERSAL", "TIME_STOP"] else (Fore.CYAN if motivo in ["TRAILING_STOP", "BREAK_EVEN"] else Fore.MAGENTA)))
-                        pnl_bruto_usd = (monto_invertido * LEVERAGE) * pnl_pct
-                        costo_fees_usd = (monto_invertido * LEVERAGE) * ROUND_TRIP_FEE
-                        pnl_neto_usd = pnl_bruto_usd - costo_fees_usd
+                        # --- EJECUCION DE SALIDA REAL ---
+                        side_exit = "SELL" if posicion == 'LONG' else "BUY"
                         
-                        pnl_acumulado += pnl_neto_usd
-                        trades_totales += 1
+                        # Obtener la cantidad exacta abierta desde Binance para evitar polvo
+                        loop = asyncio.get_event_loop()
+                        open_qty = await loop.run_in_executor(None, obtener_posicion_abierta, "ETHUSDT")
                         
-                        # --- CORTACIRCUITOS DINÁMICO ---
-                        if pnl_neto_usd > 0:
-                            rachas_perdidas = 0
-                            cooldown_actual = 10 # Reducido a 10s para no perder ráfagas de la tendencia
-                        else:
-                            rachas_perdidas += 1
-                            if rachas_perdidas >= 4:
-                                cooldown_actual = 3600 # Reducido a 1 hora
-                                print(f"\n{Fore.RED}🛑 [HIBERNACION] 4 perdidas consecutivas. Mercado TOXICO. Bot apagado por 1 hora.")
-                                log_terminal_event("WARNING", "RISK_CORTACIRCUITOS", "Mercado toxico, apagando por 1h", PAPER_TERMINAL_LOG_FILE)
+                        qty = open_qty if open_qty > 0 else ((monto_invertido * LEVERAGE) / mid_price)
+                        
+                        orden_salida = await loop.run_in_executor(None, ejecutar_orden_mercado, "ETHUSDT", side_exit, qty, True)
+                        
+                        if orden_salida:
+                            # --- CANCELAR ORDENES DE PROTECCION ---
+                            # This will cancel the STOP_MARKET order placed at entry
+                            await loop.run_in_executor(None, cancelar_todas_las_ordenes, "ETHUSDT")
+                            
+                            precio_salida_real = float(orden_salida.get('avgPrice', precio_salida))
+                            if precio_salida_real == 0: precio_salida_real = precio_salida
+                            
+                            pnl_pct_real = (precio_salida_real - precio_entrada) / precio_entrada if posicion == 'LONG' else (precio_entrada - precio_salida_real) / precio_entrada
+                            
+                            color = Fore.GREEN if motivo == "HARD_TP" else (Fore.YELLOW if motivo == "SMART_TP" else (Fore.LIGHTRED_EX if motivo in ["AI_REVERSAL", "TIME_STOP"] else (Fore.CYAN if motivo in ["TRAILING_STOP", "BREAK_EVEN"] else Fore.MAGENTA)))
+                            pnl_bruto_usd = (monto_invertido * LEVERAGE) * pnl_pct_real
+                            costo_fees_usd = (monto_invertido * LEVERAGE) * ROUND_TRIP_FEE
+                            pnl_neto_usd = pnl_bruto_usd - costo_fees_usd
+                            
+                            pnl_acumulado += pnl_neto_usd
+                            trades_totales += 1
+                            
+                            # --- CORTACIRCUITOS DINÁMICO ---
+                            if pnl_neto_usd > 0:
+                                rachas_perdidas = 0
+                                cooldown_actual = 10 # From bot_core
                             else:
-                                cooldown_actual = 60 * rachas_perdidas # Cooldown mucho más corto (1 min, 2 min...)
-                                print(f"\n{Fore.RED}⚠️ [CORTACIRCUITOS] Racha perdedora: {rachas_perdidas}. Bot pausado por {cooldown_actual/60:.0f} minutos.")
-                                log_terminal_event("WARNING", "RISK_PAUSA", f"Pausa tras perdida. Cooldown: {cooldown_actual}s", PAPER_TERMINAL_LOG_FILE)
-                        # --------------------------------
-                        
-                        print(f"\n{color}[CERRADO] {motivo} ETH | PnL Bruto: {pnl_pct*100:.2f}% | NETO: ${pnl_neto_usd:.3f}")
-                        
-                        log_terminal_event("INFO", "TRADE_EXIT", f"Cierre por {motivo}", PAPER_TERMINAL_LOG_FILE, {
-                            "exit_price": precio_salida, "pnl_pct": round(pnl_pct, 5), 
-                            "pnl_usd": round(pnl_neto_usd, 4), "max_pnl": round(max_pnl_pct, 5),
-                            "duracion_seg": round(time.time() - timestamp_entrada, 1)
-                        })
-                        
-                        registrar_trade_log(posicion, precio_entrada, precio_salida, pnl_pct, pnl_neto_usd, PAPER_LOG_FILE, PAPER_TERMINAL_LOG_FILE)
-                        
-                        posicion = None
-                        max_pnl_pct = 0.0 
-                        ultimo_cierre = time.time()
-                        confirmaciones_reversal = 0
-                        timestamp_entrada = 0.0
-                    guardar_estado_simulacion(posicion, precio_entrada, max_pnl_pct, pnl_acumulado, trades_totales, monto_invertido, rachas_perdidas, timestamp_entrada, 0.0)
+                                rachas_perdidas += 1
+                                if rachas_perdidas >= 4:
+                                    cooldown_actual = 3600 # From bot_core
+                                    print(f"\n{Fore.RED}🛑 [HIBERNACION] 4 perdidas consecutivas. Mercado TOXICO. Bot apagado por 1 hora.")
+                                else:
+                                    cooldown_actual = 60 * rachas_perdidas # From bot_core
+                                    print(f"\n{Fore.RED}⚠️ [CORTACIRCUITOS] Racha perdedora: {rachas_perdidas}. Bot pausado por {cooldown_actual/60:.0f} minutos.")
+                            # --------------------------------
+                            
+                            print(f"\n{color}[CERRADO LIVE] {motivo} ETH | PnL: {pnl_pct_real*100:.2f}% | NETO: ${pnl_neto_usd:.3f}")
+                            
+                            log_terminal_event("INFO", "TRADE_EXIT", f"Cierre por {motivo}", LIVE_TERMINAL_LOG_FILE, {
+                                "exit_price": precio_salida_real, "pnl_pct": round(pnl_pct_real, 5), 
+                                "pnl_usd": round(pnl_neto_usd, 4), "max_pnl": round(max_pnl_pct, 5),
+                                "duracion_seg": round(time.time() - timestamp_entrada, 1)
+                            })
+                            
+                            registrar_trade_log(posicion, precio_entrada, precio_salida_real, pnl_pct_real, pnl_neto_usd, LIVE_LOG_FILE, LIVE_TERMINAL_LOG_FILE)
+                            
+                            posicion = None # From bot_core
+                            max_pnl_pct = 0.0 
+                            ultimo_cierre = time.time()
+                            confirmaciones_reversal = 0
+                            timestamp_entrada = 0.0
+                    guardar_estado_simulacion(LIVE_STATE_FILE, posicion, precio_entrada, max_pnl_pct, pnl_acumulado, trades_totales, monto_invertido, rachas_perdidas, timestamp_entrada, 0.0)
 
             except (websockets.exceptions.ConnectionClosed, asyncio.TimeoutError):
                 print(f"\n{Fore.RED}[DESCONEXION] Conexion perdida. Reconectando en 2s...")
-                log_terminal_event("WARNING", "NETWORK_DISCONNECT", "Conexion WS cerrada por el servidor.", PAPER_TERMINAL_LOG_FILE)
+                log_terminal_event("WARNING", "NETWORK_DISCONNECT", "Conexion WS cerrada por el servidor.", LIVE_TERMINAL_LOG_FILE)
                 await asyncio.sleep(2)
                 break
             except Exception as e:
                 print(f"\n{Fore.RED}[ERROR] Loop Simulacion ETH: {repr(e)}")
-                log_terminal_event("ERROR", "SYSTEM_EXCEPTION", repr(e), PAPER_TERMINAL_LOG_FILE)
+                log_terminal_event("ERROR", "SYSTEM_EXCEPTION", repr(e), LIVE_TERMINAL_LOG_FILE)
                 import traceback
                 traceback.print_exc()
                 await asyncio.sleep(1)
 
 if __name__ == "__main__":
-    db = GestorDB(DB_NAME, PAPER_TERMINAL_LOG_FILE)
-    ia = CerebroIA(PAPER_MODEL_FILE, PAPER_TERMINAL_LOG_FILE)
+    db = GestorDB(DB_NAME, LIVE_TERMINAL_LOG_FILE)
+    ia = CerebroIA(LIVE_MODEL_FILE, LIVE_TERMINAL_LOG_FILE)
     try:
         while True:
             try:

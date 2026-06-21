@@ -45,6 +45,14 @@ def main():
     print(f"{Fore.MAGENTA}      MASTER QUANT ORCHESTRATOR INICIADO     ")
     print(f"{Fore.MAGENTA}=============================================")
 
+    # --- CONFIGURACION DE ENTORNO ---
+    MODO_PRODUCCION = False # Cambiar a True para usar dinero real (bot_eth_live.py)
+    
+    if MODO_PRODUCCION:
+        print(f"{Fore.RED}{Style.BRIGHT}!!! ADVERTENCIA: MODO PRODUCCION ACTIVADO. SE USARA DINERO REAL !!!{Style.RESET_ALL}")
+    else:
+        print(f"{Fore.GREEN}MODO PAPER TRADING (Simulacion Segura).{Style.RESET_ALL}")
+
     # --- VERIFICACION DE ENTORNO CUDA ---
     try:
         # Intentamos aplicar el parche de PATH antes de la verificacion de Numba
@@ -67,7 +75,14 @@ def main():
     # Rutas absolutas a tus scripts
     BASE_DIR = os.path.dirname(os.path.abspath(__file__))
     CEREBRO_CUDA_PATH = os.path.join(BASE_DIR, "cerebro_cuda.py")
-    BOT_ETH_PAPER_PATH = os.path.join(BASE_DIR, "bot_eth", "bot_eth_paper.py")
+    
+    if MODO_PRODUCCION:
+        BOT_ETH_PATH = os.path.join(BASE_DIR, "bot_eth", "bot_eth_live.py")
+        bot_name_label = "Bot ETH (LIVE/REAL)"
+    else:
+        BOT_ETH_PATH = os.path.join(BASE_DIR, "bot_eth", "bot_eth_paper.py")
+        bot_name_label = "Bot ETH (Simulador)"
+        
     SENTIMENT_PATH = os.path.join(BASE_DIR, "cerebro_sentimiento.py")
 
     # Iniciar el motor de sentimiento NLP
@@ -80,8 +95,8 @@ def main():
     print(f"{Fore.BLUE}[ORQUESTADOR] Esperando 10 segundos para que los motores inicialicen...")
     time.sleep(10)
 
-    # Iniciar el bot simulado en otro proceso
-    bot_process = run_process(BOT_ETH_PAPER_PATH, "Bot ETH (Simulador)")
+    # Iniciar el bot en otro proceso
+    bot_process = run_process(BOT_ETH_PATH, bot_name_label)
 
     if not cerebro_process or not bot_process or not sentiment_process:
         print(f"{Fore.RED}[ORQUESTADOR] Uno o más procesos fallaron al iniciar. Deteniendo...")
@@ -102,7 +117,7 @@ def main():
                 cerebro_process = run_process(CEREBRO_CUDA_PATH, "Cerebro CUDA (Optimizador)")
             if bot_process.poll() is not None:
                 print(f"{Fore.RED}[ORQUESTADOR] Bot ETH ha terminado. Reiniciando...")
-                bot_process = run_process(BOT_ETH_PAPER_PATH, "Bot ETH (Simulador)")
+                bot_process = run_process(BOT_ETH_PATH, bot_name_label)
             time.sleep(5) # Chequear cada 5 segundos
     except KeyboardInterrupt:
         print(f"\n{Fore.YELLOW}[ORQUESTADOR] Apagando procesos controlados...")
