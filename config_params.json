@@ -1,11 +1,11 @@
 {
     "ETH": {
-        "take_profit": 0.0052,
-        "stop_loss": 0.00913,
-        "imbalance": 0.225,
-        "ia_confidence": 0.792,
-        "ofi_threshold": 0.352,
-        "ofi_ema_5_threshold": 0.209,
-        "last_update": "09:03:46"
+        "take_profit": 0.00519,
+        "stop_loss": 0.01171,
+        "imbalance": 0.242,
+        "ia_confidence": 0.791,
+        "ofi_threshold": 0.337,
+        "ofi_ema_5_threshold": 0.177,
+        "last_update": "16:47:42"
     }
 }

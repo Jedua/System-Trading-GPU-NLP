@@ -31,7 +31,7 @@ MAX_PERDIDA_DIARIA = -2.5
 COOLDOWN_SEGUNDOS = 300
 HORA_INICIO_OP = 0   # 00:00 UTC
 HORA_FIN_OP = 24     # 24:00 UTC (Todo el dia)
-ROUND_TRIP_FEE = 0.0007
+ROUND_TRIP_FEE = 0.0010
 TICKS_CONFIRMACION = 1
 SPREAD_MAXIMO_PCT = 0.0003
 ACTIVACION_BE_PCT = 0.0030
@@ -412,7 +412,8 @@ class CerebroIA:
 
         merged = merged.dropna(subset=['future_bid', 'future_ask'])
 
-        MIN_PROFIT_PCT = 0.0025 # Sincronizado con el bot real (0.25%)
+        global TAKE_PROFIT_PCT
+        MIN_PROFIT_PCT = TAKE_PROFIT_PCT * 0.8 # Entrenar la IA para apuntar ligeramente debajo del Take Profit
         umbral_subida = merged['best_ask'] * (1 + MIN_PROFIT_PCT)
         umbral_bajada = merged['best_bid'] * (1 - MIN_PROFIT_PCT)
 

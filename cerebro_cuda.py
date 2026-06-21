@@ -74,7 +74,7 @@ def gpu_backtest_kernel(bids, asks, imbs, ofis, ofi_ema_5s, ofi_ema_15s, prob_up
         losses = 0
         
         # Constantes hardcoded para velocidad en GPU
-        fee_rate = 0.00035 # Maker(0.02%)/Taker(0.05%) promedio -> 0.07% total (0.035 * 2)
+        fee_rate = 0.0005 # Taker(0.05%) -> 0.10% total (0.05 * 2)
         leverage = 20.0
         
         ema_fast = 0.0
@@ -145,10 +145,10 @@ def gpu_backtest_kernel(bids, asks, imbs, ofis, ofi_ema_5s, ofi_ema_15s, prob_up
                 
                 if prob_ups[i] > conf_thresh and current_imb > imb_thresh and ofis[i] > ofi_thresh and ofi_ema_5s[i] > ofi_ema_5_thresh and tendencia_alcista:
                     posicion = 1
-                    entry_price = bid # Forma límite en el BID
+                    entry_price = ask # Orden Taker (cruza spread comprando al ask)
                 elif prob_downs[i] > conf_thresh and current_imb < -imb_thresh and ofis[i] < -ofi_thresh and ofi_ema_5s[i] < -ofi_ema_5_thresh and tendencia_bajista:
                     posicion = -1
-                    entry_price = ask # Forma límite en el ASK
+                    entry_price = bid # Orden Taker (cruza spread vendiendo al bid)
         
         # Guardamos resultado
         # Si opera muy poco (<5 trades), castigamos con costo alto
@@ -219,8 +219,7 @@ def entrenar_y_predecir_ia(df):
     merged = merged.dropna(subset=['future_bid', 'future_ask'])
     
     # Sincronizado a 0.25% para que la IA este alineada con los TP del bot
-    MIN_PROFIT_PCT = 0.0025 
-    MIN_PROFIT_PCT = 0.0050 # Sincronizado con el nuevo TP minimo del optimizador
+    MIN_PROFIT_PCT = 0.0025 # Retornado a 0.25% para optimizar movimientos más realistas de Taker
     
     # Para un LONG, entramos en 'best_ask'. El exito es salir en 'future_bid' por encima de nuestra entrada + profit.
     umbral_subida = merged['best_ask'] * (1 + MIN_PROFIT_PCT)

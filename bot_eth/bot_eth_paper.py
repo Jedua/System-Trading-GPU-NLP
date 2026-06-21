@@ -445,8 +445,8 @@ async def main_loop(db, ia):
                             sl_dinamico = -STOP_LOSS_PCT
                             
                             # --- 2.1 BREAK-EVEN AUTOMATICO ---
-                            # Si ganamos más de un 0.30%, protegemos la operacion cobrando comisiones minimo
-                            ACTIVACION_BE_PCT = 0.0030 
+                            # Si ganamos más de un 0.35%, protegemos la operacion cobrando comisiones minimo
+                            ACTIVACION_BE_PCT = 0.0035 
                             if max_pnl_pct >= ACTIVACION_BE_PCT:
                                 sl_dinamico = ROUND_TRIP_FEE * 1.5 # Colchon extra para garantizar 0 perdidas reales
                             
@@ -504,7 +504,7 @@ async def main_loop(db, ia):
                         ultimo_cierre = time.time()
                         confirmaciones_reversal = 0
                         timestamp_entrada = 0.0
-                    guardar_estado_simulacion(posicion, precio_entrada, max_pnl_pct, pnl_acumulado, trades_totales, monto_invertido, rachas_perdidas, timestamp_entrada, 0.0)
+                    guardar_estado_simulacion(PAPER_STATE_FILE, posicion, precio_entrada, max_pnl_pct, pnl_acumulado, trades_totales, monto_invertido, rachas_perdidas, timestamp_entrada, 0.0)
 
             except (websockets.exceptions.ConnectionClosed, asyncio.TimeoutError):
                 print(f"\n{Fore.RED}[DESCONEXION] Conexion perdida. Reconectando en 2s...")
