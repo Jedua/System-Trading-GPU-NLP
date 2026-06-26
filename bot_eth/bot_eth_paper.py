@@ -25,12 +25,12 @@ import bot_core
 
 # --- CONFIGURACION ---
 SYMBOL_WSS = 'ethusdt'  
-DB_NAME = os.path.join(SCRIPT_DIR, "cerebro_eth.db")
+DB_NAME = os.path.join(PARENT_DIR, "cerebro_eth.db")
 CONFIG_FILE = os.path.join(SCRIPT_DIR, "..", "config_params.json")
-PAPER_LOG_FILE = os.path.join(SCRIPT_DIR, "paper_trading_log.txt")
-PAPER_STATE_FILE = os.path.join(SCRIPT_DIR, "sim_state_eth.json")
+PAPER_LOG_FILE = os.path.join(PARENT_DIR, "paper_trading_log.txt")
+PAPER_STATE_FILE = os.path.join(PARENT_DIR, "sim_state_eth.json")
 PAPER_MODEL_FILE = os.path.join(SCRIPT_DIR, "..", "modelo_rl_eth.zip")
-PAPER_TERMINAL_LOG_FILE = os.path.join(SCRIPT_DIR, "log_terminal_data.json")
+PAPER_TERMINAL_LOG_FILE = os.path.join(PARENT_DIR, "log_terminal_data.json")
 
 init(autoreset=True)
 warnings.filterwarnings('ignore')
@@ -412,7 +412,7 @@ async def main_loop(db, ia, exp, risk_manager):
 if __name__ == "__main__":
     db = GestorDB(DB_NAME, PAPER_TERMINAL_LOG_FILE)
     ia = CerebroRL(PAPER_MODEL_FILE, PAPER_TERMINAL_LOG_FILE)
-    exp = GestorExperiencia(os.path.join(SCRIPT_DIR, "cerebro_experiencia.db"))
+    exp = GestorExperiencia(os.path.join(PARENT_DIR, "cerebro_experiencia.db"))
     risk_manager = RiskManager(balance_inicial=100.0, max_leverage=LEVERAGE)
     
     try:
