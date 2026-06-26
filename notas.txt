@@ -21,3 +21,5 @@ conda activate cerebro_gpu
 python quant_orchestrator.py
 python quant_orchestrator_sol.py
 python quant_orchestrator_ada.py
+
+python cerebro_rl_train.py

@@ -1,14 +1,18 @@
 import asyncio
 import aiohttp
 import requests
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 import json
 import os
+os.environ['KMP_DUPLICATE_LIB_OK'] = 'TRUE'
 import time
 import xml.etree.ElementTree as ET
 from colorama import Fore, Style, init
-from transformers import pipeline
+from transformers import pipeline, logging as hf_logging
 
 init(autoreset=True)
+hf_logging.set_verbosity_error()
 
 # --- Configuracion ---
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -18,7 +22,11 @@ POLLING_INTERVAL = 60 # Segundos entre llamadas. 60s es ideal para no saturar lo
 # Fuentes RSS Gratuitas de Alta Confianza
 RSS_FEEDS = [
     "https://cointelegraph.com/rss",
-    "https://www.coindesk.com/arc/outboundfeeds/rss/"
+    "https://www.coindesk.com/arc/outboundfeeds/rss/",
+    "https://cryptoslate.com/feed/",
+    "https://www.newsbtc.com/feed/",
+    "https://cryptopotato.com/feed/",
+    "https://u.today/rss"
 ]
 
 print(f"{Fore.CYAN}[SENTIMENT] Inicializando FinBERT local (esto puede tardar unos segundos)...")
@@ -57,9 +65,16 @@ def obtener_noticias_sync():
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
     }
 
+    # Configuracion de Sesion con Retries (Tolerancia a fallos de red)
+    session = requests.Session()
+    retries = Retry(total=3, backoff_factor=1.5, status_forcelist=[ 500, 502, 503, 504 ])
+    session.mount('https://', HTTPAdapter(max_retries=retries))
+    session.mount('http://', HTTPAdapter(max_retries=retries))
+
     for url in RSS_FEEDS:
         try:
-            response = requests.get(url, headers=headers, timeout=10)
+            # Aumentamos el timeout a 25s ya que Cointelegraph aveces es muy lento
+            response = session.get(url, headers=headers, timeout=25)
             if response.status_code == 200:
                 content = response.text
                 try:
@@ -73,8 +88,12 @@ def obtener_noticias_sync():
                     print(f"{Fore.YELLOW}[SENTIMENT ERROR] Error parseando XML de {url}")
             else:
                 print(f"{Fore.YELLOW}[SENTIMENT] Error HTTP {response.status_code} en {url}")
+        except requests.exceptions.Timeout:
+            print(f"{Fore.YELLOW}[SENTIMENT WARNING] Timeout de conexion con {url}. Saltando fuente por este ciclo.")
+        except requests.exceptions.RequestException as e:
+            print(f"{Fore.YELLOW}[SENTIMENT WARNING] Falla temporal de red con {url}: {e}")
         except Exception as e:
-            print(f"{Fore.RED}[SENTIMENT ERROR] Conexion fallida con {url}: {e}")
+            print(f"{Fore.RED}[SENTIMENT ERROR] Fallo critico con {url}: {e}")
             
     return titulares
 

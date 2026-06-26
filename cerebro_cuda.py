@@ -1,10 +1,11 @@
+import os
+os.environ['KMP_DUPLICATE_LIB_OK'] = 'TRUE'
 import numpy as np
 import pandas as pd
 import sqlite3
 from scipy.optimize import differential_evolution
 import json
 import time
-import os
 import math
 from datetime import datetime
 from colorama import Fore, Style, init
@@ -355,8 +356,8 @@ def optimizar_moneda(simbolo, db_file):
 
     # --- LIMITES MEJORADOS (MAYOR WIN RATE Y MEJOR R:R) ---
     bounds = (
-        (0.0020, 0.0060), # TP (0.20% a 0.60%) - Sincronizado con la IA
-        (0.0050, 0.0120), # SL (0.50% a 1.20%) - Limitar el riesgo para no desangrar la cuenta
+        (0.0035, 0.0075), # TP (0.35% a 0.75%) - Forzar ganancias más grandes
+        (0.0040, 0.0065), # SL (0.40% a 0.65%) - TOPE MAXIMO 0.65%
         (0.15, 0.40),
         (0.65, 0.95), # Mínimo 0.65 IA Conf para buscar más volumen de operaciones
         (0.05, 0.5),

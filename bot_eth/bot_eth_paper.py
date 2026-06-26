@@ -20,7 +20,8 @@ PARENT_DIR = os.path.dirname(SCRIPT_DIR)
 if PARENT_DIR not in sys.path:
     sys.path.insert(0, PARENT_DIR)
 
-from bot_core import cargar_configuracion, log_terminal_event, registrar_trade_log, guardar_estado_simulacion, cargar_estado_simulacion, MarketRegime, GestorDB, fetch_mtf_data, CerebroIA, read_sentiment, UMBRAL_CONFIANZA_IA, TAKE_PROFIT_PCT, STOP_LOSS_PCT, UMBRAL_IMBALANCE, OFI_THRESHOLD, OFI_EMA_5_THRESHOLD, VENTANA_APRENDIZAJE, MONTO_USDT, LEVERAGE, MAX_PERDIDA_DIARIA, COOLDOWN_SEGUNDOS, HORA_INICIO_OP, HORA_FIN_OP, ROUND_TRIP_FEE, TICKS_CONFIRMACION, SPREAD_MAXIMO_PCT, ACTIVACION_BE_PCT, ACTIVACION_TS_PCT, DISTANCIA_TS_PCT
+from bot_core import cargar_configuracion, log_terminal_event, registrar_trade_log, guardar_estado_simulacion, cargar_estado_simulacion, MarketRegime, GestorDB, fetch_mtf_data, CerebroRL, read_sentiment, GestorExperiencia, RiskManager, VENTANA_APRENDIZAJE, MONTO_USDT, LEVERAGE, MAX_PERDIDA_DIARIA, COOLDOWN_SEGUNDOS, HORA_INICIO_OP, HORA_FIN_OP, ROUND_TRIP_FEE, TICKS_CONFIRMACION, SPREAD_MAXIMO_PCT, ACTIVACION_BE_PCT, ACTIVACION_TS_PCT
+import bot_core
 
 # --- CONFIGURACION ---
 SYMBOL_WSS = 'ethusdt'  
@@ -28,14 +29,14 @@ DB_NAME = os.path.join(SCRIPT_DIR, "cerebro_eth.db")
 CONFIG_FILE = os.path.join(SCRIPT_DIR, "..", "config_params.json")
 PAPER_LOG_FILE = os.path.join(SCRIPT_DIR, "paper_trading_log.txt")
 PAPER_STATE_FILE = os.path.join(SCRIPT_DIR, "sim_state_eth.json")
-PAPER_MODEL_FILE = os.path.join(SCRIPT_DIR, "modelo_ia_eth.json")
+PAPER_MODEL_FILE = os.path.join(SCRIPT_DIR, "..", "modelo_rl_eth.zip")
 PAPER_TERMINAL_LOG_FILE = os.path.join(SCRIPT_DIR, "log_terminal_data.json")
 
 init(autoreset=True)
 warnings.filterwarnings('ignore')
 
 # --- MOTOR PRINCIPAL ---
-async def main_loop(db, ia):
+async def main_loop(db, ia, exp, risk_manager):
     print(f"{Fore.MAGENTA}=====================================================")
     print(f"{Fore.MAGENTA} [SISTEMA] ETHEREUM BOT - PAPER TRADING (SIMULACION)")
     print(f"{Fore.MAGENTA}=====================================================")
@@ -50,7 +51,7 @@ async def main_loop(db, ia):
     last_mtf_update = 0
 
     cargar_configuracion(CONFIG_FILE)
-    print(f"[CONFIG] IA {UMBRAL_CONFIANZA_IA} | IMB {UMBRAL_IMBALANCE} | TP {TAKE_PROFIT_PCT*100:.2f}% | SL {STOP_LOSS_PCT*100:.2f}% | OFI {OFI_THRESHOLD} | EMA5 {OFI_EMA_5_THRESHOLD}")
+    print(f"[CONFIG] IA {bot_core.UMBRAL_CONFIANZA_IA} | IMB {bot_core.UMBRAL_IMBALANCE} | TP {bot_core.TAKE_PROFIT_PCT*100:.2f}% | SL {bot_core.STOP_LOSS_PCT*100:.2f}% | OFI {bot_core.OFI_THRESHOLD} | EMA5 {bot_core.OFI_EMA_5_THRESHOLD}")
     
     if not os.path.exists(PAPER_LOG_FILE):
         with open(PAPER_LOG_FILE, "w") as f:
@@ -261,9 +262,13 @@ async def main_loop(db, ia):
                 loop = asyncio.get_event_loop() # From bot_core
                 await loop.run_in_executor(None, db.guardar_tick, features) # From bot_core
                 await loop.run_in_executor(None, db.purgar_datos_viejos) # From bot_core
-                precision = await loop.run_in_executor(None, ia.entrenar, db) # From bot_core
+                # --- INFERENCIA RL ---
+                pos_int = 1 if posicion == 'LONG' else (-1 if posicion == 'SHORT' else 0)
+                current_pnl_pct = 0.0
+                if pos_int == 1: current_pnl_pct = (best_bid - precio_entrada) / precio_entrada
+                elif pos_int == -1: current_pnl_pct = (precio_entrada - best_ask) / precio_entrada
 
-                prob_up, prob_down = ia.predecir(features)
+                action = ia.predecir_accion(features, pos_int, current_pnl_pct)
                 
                 if ticks_procesados % 10 == 0:
                     col = Fore.GREEN if imbalance > 0 else Fore.RED
@@ -295,177 +300,22 @@ async def main_loop(db, ia):
                             estado_str = "ESPERANDO"
                         
                         hora_actual = datetime.now().strftime("%H:%M:%S")
-                        print(f"\r\033[2K{hora_actual} | ETH {mid_price:.2f} | IMB: {col}{imbalance:.2f}{Style.RESET_ALL} | UP:{prob_up:.2f} DN:{prob_down:.2f} | {regime_str}{estado_str}", end='', flush=True)
+                        print(f"\r\033[2K{hora_actual} | ETH {mid_price:.2f} | IMB: {col}{imbalance:.2f}{Style.RESET_ALL} | ACT:{action} | {regime_str}{estado_str}", end='', flush=True)
 
-                # --- LOGICA DE TRADING (SIMULADA) ---
-                if posicion is None and ia.trained and not estado_hibernacion:
+                # --- LOGICA DE TRADING RL (SIMULADA) ---
+                if ia.trained and not estado_hibernacion:
+                    
                     if time.time() - ultimo_cierre < cooldown_actual:
-                        continue 
-
-                    if regimen_actual in ["SHOCK", "RANGO", "CALIBRANDO"]:
-                        confirmaciones_long = 0
-                        confirmaciones_short = 0
                         continue
-
-                    hora_actual_utc = datetime.utcnow().hour
-                    if hora_actual_utc < HORA_INICIO_OP or hora_actual_utc >= HORA_FIN_OP:
-                        confirmaciones_long = 0
-                        confirmaciones_short = 0
-                        continue
-
-                    spread_aceptable = spread_pct <= SPREAD_MAXIMO_PCT
-
-                    # --- FILTROS ESTRICTOS DE SEGURIDAD (HARD FILTERS) ---
-                    filtro_sentiment_long = macro_sentiment_score > -0.20 # From bot_core
-                    filtro_sentiment_short = macro_sentiment_score < 0.20
-                    
-                    filtro_tendencia_long = ema_15m_dist >= -0.001 and rsi_5m < 70.0
-                    filtro_tendencia_short = ema_15m_dist <= 0.001 and rsi_5m > 30.0
-
-                    if prob_up > UMBRAL_CONFIANZA_IA and imbalance > UMBRAL_IMBALANCE and ofi_t > OFI_THRESHOLD and ofi_ema_5_t > OFI_EMA_5_THRESHOLD and spread_aceptable and filtro_sentiment_long and filtro_tendencia_long:
-                        confirmaciones_long += 1
-                        confirmaciones_short = 0
-                    elif prob_down > UMBRAL_CONFIANZA_IA and imbalance < -UMBRAL_IMBALANCE and ofi_t < -OFI_THRESHOLD and ofi_ema_5_t < -OFI_EMA_5_THRESHOLD and spread_aceptable and filtro_sentiment_short and filtro_tendencia_short:
-                        confirmaciones_short += 1
-                        confirmaciones_long = 0
-                    else:
-                        confirmaciones_long = 0
-                        confirmaciones_short = 0
-
-                    if confirmaciones_long >= TICKS_CONFIRMACION:
-                        print(f"\n{Fore.GREEN}[SIM] SENAL LONG CONFIRMADA ({TICKS_CONFIRMACION} ticks continuos)")
-                        posicion = 'LONG'
-                        precio_entrada = best_ask # Simula orden MARKET TAKER (paga spread)
-                        confirmaciones_long = 0
-                        max_pnl_pct = 0.0
                         
-                        # --- POSITION SIZING DINAMICO ---
-                        monto_invertido = MONTO_USDT
-                        if prob_up > 0.95: monto_invertido = MONTO_USDT * 1.5   # Aumento agresivo
-                        elif prob_up > 0.90: monto_invertido = MONTO_USDT * 1.2 # Aumento leve
-                        if monto_invertido > MONTO_USDT: print(f"{Fore.CYAN}⚖️ Apalancando ${monto_invertido:.2f} USDT por Confianza IA alta.")
+                    # FUNCION DE CIERRE AUXILIAR
+                    def cerrar_posicion(motivo="RL_CLOSE"):
+                        nonlocal posicion, precio_entrada, max_pnl_pct, pnl_acumulado, trades_totales, monto_invertido, rachas_perdidas, cooldown_actual, ultimo_cierre, timestamp_entrada
                         
-                        timestamp_entrada = time.time()
+                        precio_salida = best_bid if posicion == 'LONG' else best_ask
+                        pnl_pct = (precio_salida - precio_entrada) / precio_entrada if posicion == 'LONG' else (precio_entrada - precio_salida) / precio_entrada
                         
-                        # Guardar radiografia de la entrada
-                        log_terminal_event("INFO", "TRADE_ENTRY", f"LONG a {precio_entrada}", PAPER_TERMINAL_LOG_FILE, {
-                            "prob_up": round(prob_up, 4), "prob_down": round(prob_down, 4),
-                            "imbalance": round(imbalance, 4), "ofi": round(ofi_t, 2), 
-                            "cvd_ema": round(cvd_ema, 2), "rsi": round(rsi_5m, 2),
-                            "spread": spread_pct, "monto": monto_invertido,
-                            "regimen": regimen_actual, "sentiment": macro_sentiment_score
-                        })
-                        
-                        guardar_estado_simulacion(PAPER_STATE_FILE, posicion, precio_entrada, max_pnl_pct, pnl_acumulado, trades_totales, monto_invertido, rachas_perdidas, timestamp_entrada, prob_up)
-                    elif confirmaciones_short >= TICKS_CONFIRMACION:
-                        print(f"\n{Fore.RED}[SIM] SENAL SHORT CONFIRMADA ({TICKS_CONFIRMACION} ticks continuos)")
-                        posicion = 'SHORT'
-                        precio_entrada = best_bid # Simula orden MARKET TAKER (paga spread)
-                        confirmaciones_short = 0
-                        max_pnl_pct = 0.0
-                        
-                        # --- POSITION SIZING DINAMICO ---
-                        monto_invertido = MONTO_USDT
-                        if prob_down > 0.95: monto_invertido = MONTO_USDT * 1.5   # Aumento agresivo
-                        elif prob_down > 0.90: monto_invertido = MONTO_USDT * 1.2 # Aumento leve
-                        if monto_invertido > MONTO_USDT: print(f"{Fore.CYAN}⚖️ Apalancando ${monto_invertido:.2f} USDT por Confianza IA alta.")
-                        
-                        timestamp_entrada = time.time()
-                        
-                        # Guardar radiografia de la entrada
-                        log_terminal_event("INFO", "TRADE_ENTRY", f"SHORT a {precio_entrada}", PAPER_TERMINAL_LOG_FILE, {
-                            "prob_up": round(prob_up, 4), "prob_down": round(prob_down, 4),
-                            "imbalance": round(imbalance, 4), "ofi": round(ofi_t, 2), 
-                            "cvd_ema": round(cvd_ema, 2), "rsi": round(rsi_5m, 2),
-                            "spread": spread_pct, "monto": monto_invertido,
-                            "regimen": regimen_actual, "sentiment": macro_sentiment_score
-                        })
-                        
-                        guardar_estado_simulacion(PAPER_STATE_FILE, posicion, precio_entrada, max_pnl_pct, pnl_acumulado, trades_totales, monto_invertido, rachas_perdidas, timestamp_entrada, prob_down)
-
-                # B) SALIDAS SIMULADAS
-                elif posicion in ['LONG', 'SHORT']:
-                    # Simular Market Taker Exit (Cruzar el spread)
-                    # En producción real, los SL, Trailing y Pánico son a mercado.
-                    # LONG sale vendiendo al Bid. SHORT sale comprando al Ask.
-                    precio_salida = best_bid if posicion == 'LONG' else best_ask
-                    pnl_pct = (precio_salida - precio_entrada) / precio_entrada if posicion == 'LONG' else (precio_entrada - precio_salida) / precio_entrada
-                    
-                    if pnl_pct > max_pnl_pct:
-                        max_pnl_pct = pnl_pct
-                        
-                    should_close = False
-                    motivo = ""
-                    
-                    duracion_trade = time.time() - timestamp_entrada if timestamp_entrada > 0 else 0
-                    
-                    # 0. TIME STOP: Evitar desangrarse lentamente (Max 1 hora)
-                    if duracion_trade > 900 and not should_close: # Reduced from 3600s (1 hour) to 900s (15 minutes)
-                        if pnl_pct < (TAKE_PROFIT_PCT * 0.5): # Si no estamos claramente ganando, abortar
-                            should_close = True
-                            motivo = "TIME_STOP"
-                    
-                    # 1. SALIDA DE EMERGENCIA (AI PÁNICO)
-                    if ia.trained and not should_close:
-                        # Filtro de paciencia: No entrar en pánico en los primeros 10 segundos
-                        if duracion_trade > 10:
-                            # IA Modo Panico: Cortar rapido si estamos en perdidas y la senal en contra es fuerte
-                            if pnl_pct < 0: # From bot_core
-                                if posicion == 'LONG' and prob_down > 0.85: confirmaciones_reversal += 1
-                                elif posicion == 'SHORT' and prob_up > 0.85: confirmaciones_reversal += 1
-                                else: confirmaciones_reversal = 0
-                                ticks_necesarios = 40 # Cortar perdidas tras ~4s de confirmacion constante
-                            else:
-                                # Modo Paciente: Exigir mucha fuerza para cerrar una ganancia prematuramente # From bot_core
-                                if posicion == 'LONG' and prob_down > 0.85 and imbalance < -0.40: confirmaciones_reversal += 1
-                                elif posicion == 'SHORT' and prob_up > 0.85 and imbalance > 0.40: confirmaciones_reversal += 1
-                                else: confirmaciones_reversal = 0
-                                
-                                ticks_necesarios = 100 # Ser paciente con las ganancias (~10s)
-                                
-                            if confirmaciones_reversal >= ticks_necesarios:
-                                should_close = True
-                                motivo = "AI_REVERSAL"
-                                confirmaciones_reversal = 0
-                        else:
-                            confirmaciones_reversal = 0
-
-                    # 2. SALIDA INTELIGENTE Y ANTI-AVARICIA (TRAILING STOP Y BREAK-EVEN)
-                    if not should_close:
-                        if pnl_pct >= TAKE_PROFIT_PCT * 1.25: # From bot_core
-                            should_close = True
-                            motivo = "HARD_TP"
-                        elif pnl_pct >= TAKE_PROFIT_PCT: # From bot_core
-                            if posicion == 'LONG' and prob_up > 0.70 and imbalance > 0.10: pass 
-                            elif posicion == 'SHORT' and prob_down > 0.70 and imbalance < -0.10: pass 
-                            else:
-                                should_close = True
-                                motivo = "SMART_TP"
-                        else:
-                            sl_dinamico = -STOP_LOSS_PCT
-                            
-                            # --- 2.1 BREAK-EVEN AUTOMATICO ---
-                            # Si ganamos más de un 0.35%, protegemos la operacion cobrando comisiones minimo
-                            ACTIVACION_BE_PCT = 0.0035 
-                            if max_pnl_pct >= ACTIVACION_BE_PCT:
-                                sl_dinamico = ROUND_TRIP_FEE * 1.5 # Colchon extra para garantizar 0 perdidas reales
-                            
-                            # --- 2.2 TRAILING STOP ---
-                            ACTIVACION_TS_PCT = TAKE_PROFIT_PCT * 0.80 # Exigir 80% de ganancia antes de perseguir
-                            DISTANCIA_TS_PCT = TAKE_PROFIT_PCT * 0.25 # Distancia para no ahogar el trade
-                            
-                            if max_pnl_pct >= ACTIVACION_TS_PCT:
-                                piso_ganancia = max(ROUND_TRIP_FEE * 1.5, sl_dinamico)
-                                sl_dinamico = max(piso_ganancia, max_pnl_pct - DISTANCIA_TS_PCT)
-                                
-                            if pnl_pct <= sl_dinamico:
-                                should_close = True
-                                if max_pnl_pct >= ACTIVACION_TS_PCT: motivo = "TRAILING_STOP"
-                                elif max_pnl_pct >= ACTIVACION_BE_PCT: motivo = "BREAK_EVEN"
-                                else: motivo = "SL"
-                        
-                    if should_close:
-                        color = Fore.GREEN if motivo == "HARD_TP" else (Fore.YELLOW if motivo == "SMART_TP" else (Fore.LIGHTRED_EX if motivo in ["AI_REVERSAL", "TIME_STOP"] else (Fore.CYAN if motivo in ["TRAILING_STOP", "BREAK_EVEN"] else Fore.MAGENTA)))
+                        color = Fore.GREEN if pnl_pct > ROUND_TRIP_FEE else Fore.RED
                         pnl_bruto_usd = (monto_invertido * LEVERAGE) * pnl_pct
                         costo_fees_usd = (monto_invertido * LEVERAGE) * ROUND_TRIP_FEE
                         pnl_neto_usd = pnl_bruto_usd - costo_fees_usd
@@ -473,37 +323,78 @@ async def main_loop(db, ia):
                         pnl_acumulado += pnl_neto_usd
                         trades_totales += 1
                         
-                        # --- CORTACIRCUITOS DINÁMICO ---
+                        # --- GUARDAR SNAPSHOT DE SALIDA (HER) ---
+                        exp.guardar_snapshot("CLOSE_" + posicion, precio_salida, pnl_neto_usd, features)
+                        
+                        # Cortacircuitos
                         if pnl_neto_usd > 0:
                             rachas_perdidas = 0
-                            cooldown_actual = 10 # Reducido a 10s para no perder ráfagas de la tendencia
+                            cooldown_actual = 5
                         else:
                             rachas_perdidas += 1
                             if rachas_perdidas >= 4:
-                                cooldown_actual = 3600 # Reducido a 1 hora
-                                print(f"\n{Fore.RED}🛑 [HIBERNACION] 4 perdidas consecutivas. Mercado TOXICO. Bot apagado por 1 hora.")
-                                log_terminal_event("WARNING", "RISK_CORTACIRCUITOS", "Mercado toxico, apagando por 1h", PAPER_TERMINAL_LOG_FILE)
+                                cooldown_actual = 3600
+                                print(f"\n{Fore.RED}🛑 [HIBERNACION] 4 perdidas consecutivas.")
                             else:
-                                cooldown_actual = 60 * rachas_perdidas # Cooldown mucho más corto (1 min, 2 min...)
-                                print(f"\n{Fore.RED}⚠️ [CORTACIRCUITOS] Racha perdedora: {rachas_perdidas}. Bot pausado por {cooldown_actual/60:.0f} minutos.")
-                                log_terminal_event("WARNING", "RISK_PAUSA", f"Pausa tras perdida. Cooldown: {cooldown_actual}s", PAPER_TERMINAL_LOG_FILE)
-                        # --------------------------------
+                                cooldown_actual = 60 * rachas_perdidas
                         
                         print(f"\n{color}[CERRADO] {motivo} ETH | PnL Bruto: {pnl_pct*100:.2f}% | NETO: ${pnl_neto_usd:.3f}")
-                        
-                        log_terminal_event("INFO", "TRADE_EXIT", f"Cierre por {motivo}", PAPER_TERMINAL_LOG_FILE, {
-                            "exit_price": precio_salida, "pnl_pct": round(pnl_pct, 5), 
-                            "pnl_usd": round(pnl_neto_usd, 4), "max_pnl": round(max_pnl_pct, 5),
-                            "duracion_seg": round(time.time() - timestamp_entrada, 1)
-                        })
-                        
                         registrar_trade_log(posicion, precio_entrada, precio_salida, pnl_pct, pnl_neto_usd, PAPER_LOG_FILE, PAPER_TERMINAL_LOG_FILE)
                         
                         posicion = None
                         max_pnl_pct = 0.0 
                         ultimo_cierre = time.time()
-                        confirmaciones_reversal = 0
                         timestamp_entrada = 0.0
+
+                    # Procesar Acción RL
+                    # 1: Open Long
+                    if action == 1:
+                        if posicion == 'SHORT': cerrar_posicion("RL_REVERSAL")
+                        if posicion is None:
+                            print(f"\n{Fore.GREEN}[SIM-RL] SENAL LONG")
+                            posicion = 'LONG'
+                            precio_entrada = best_ask
+                            # --- RISK MANAGER DECIDE TAMANO POSICION ---
+                            current_lev = risk_manager.calcular_apalancamiento(100.0 + pnl_acumulado) # Asumiendo $100 capital base
+                            monto_invertido = MONTO_USDT * (current_lev / LEVERAGE)
+                            timestamp_entrada = time.time()
+                            # --- GUARDAR SNAPSHOT DE ENTRADA (HER) ---
+                            exp.guardar_snapshot("OPEN_LONG", precio_entrada, 0.0, features)
+                            
+                    # 2: Open Short
+                    elif action == 2:
+                        if posicion == 'LONG': cerrar_posicion("RL_REVERSAL")
+                        if posicion is None:
+                            print(f"\n{Fore.RED}[SIM-RL] SENAL SHORT")
+                            posicion = 'SHORT'
+                            precio_entrada = best_bid
+                            # --- RISK MANAGER DECIDE TAMANO POSICION ---
+                            current_lev = risk_manager.calcular_apalancamiento(100.0 + pnl_acumulado)
+                            monto_invertido = MONTO_USDT * (current_lev / LEVERAGE)
+                            timestamp_entrada = time.time()
+                            # --- GUARDAR SNAPSHOT DE ENTRADA (HER) ---
+                            exp.guardar_snapshot("OPEN_SHORT", precio_entrada, 0.0, features)
+                            
+                    # 3: Close Position
+                    elif action == 3 and posicion is not None:
+                        cerrar_posicion("RL_CLOSE")
+                        
+                    # Cierres Automáticos (Stop Loss, Take Profit, Trailing Stop)
+                    if posicion is not None:
+                        if current_pnl_pct > max_pnl_pct:
+                            max_pnl_pct = current_pnl_pct
+
+                        # 1. Take Profit / Trailing Stop
+                        if max_pnl_pct >= bot_core.TAKE_PROFIT_PCT:
+                            # Si el precio retrocede un poco desde el máximo, aseguramos ganancia
+                            retroceso = max_pnl_pct - current_pnl_pct
+                            if retroceso >= (bot_core.TAKE_PROFIT_PCT * 0.25) or current_pnl_pct >= (bot_core.TAKE_PROFIT_PCT * 1.5):
+                                cerrar_posicion("TAKE_PROFIT/TS")
+                        
+                        # 2. Stop Loss de Emergencia
+                        elif current_pnl_pct <= -bot_core.STOP_LOSS_PCT:
+                            cerrar_posicion("HARD_SL")
+                            
                     guardar_estado_simulacion(PAPER_STATE_FILE, posicion, precio_entrada, max_pnl_pct, pnl_acumulado, trades_totales, monto_invertido, rachas_perdidas, timestamp_entrada, 0.0)
 
             except (websockets.exceptions.ConnectionClosed, asyncio.TimeoutError):
@@ -520,14 +411,18 @@ async def main_loop(db, ia):
 
 if __name__ == "__main__":
     db = GestorDB(DB_NAME, PAPER_TERMINAL_LOG_FILE)
-    ia = CerebroIA(PAPER_MODEL_FILE, PAPER_TERMINAL_LOG_FILE)
+    ia = CerebroRL(PAPER_MODEL_FILE, PAPER_TERMINAL_LOG_FILE)
+    exp = GestorExperiencia(os.path.join(SCRIPT_DIR, "cerebro_experiencia.db"))
+    risk_manager = RiskManager(balance_inicial=100.0, max_leverage=LEVERAGE)
+    
     try:
         while True:
             try:
-                asyncio.run(main_loop(db, ia))
+                asyncio.run(main_loop(db, ia, exp, risk_manager))
             except Exception as e:
                 print(f"[ERROR] Reiniciando loop principal por: {e}")
                 time.sleep(5)
     except KeyboardInterrupt:
         print("\n[SISTEMA] Simulador ETH Detenido. Guardando datos finales...")
         db.close()
+        exp.close()

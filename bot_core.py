@@ -1,5 +1,6 @@
 import json
 import os
+os.environ['KMP_DUPLICATE_LIB_OK'] = 'TRUE'
 import time
 import pandas as pd
 import numpy as np
@@ -516,3 +517,166 @@ def read_sentiment(sentiment_file_path, terminal_log_file_path):
     except Exception as e:
         log_terminal_event("ERROR", "SENTIMENT_READ_ERROR", f"Error leyendo archivo de sentimiento: {str(e)}", terminal_log_file_path)
     return 0.0
+
+# --- CEREBRO RL (STABLE-BASELINES3 PPO) ---
+class CerebroRL:
+    """
+    Motor de Inferencia usando Aprendizaje por Refuerzo (PPO).
+    """
+    def __init__(self, model_path, terminal_log_file_path):
+        self.model_path = model_path
+        self.terminal_log_file_path = terminal_log_file_path
+        self.model = None
+        self.trained = False
+        
+        try:
+            from stable_baselines3 import PPO
+            # Añadimos .zip si no lo tiene porque sb3 guarda así
+            if not self.model_path.endswith('.zip'):
+                self.model_path += '.zip'
+                
+            if os.path.exists(self.model_path):
+                self.model = PPO.load(self.model_path, device='cuda')
+                self.trained = True
+                print(f"{Fore.GREEN}[IA-RL] Modelo RL cargado desde disco. Listo para operar autónomamente.")
+            else:
+                print(f"{Fore.YELLOW}[IA-RL WARNING] No se encontró {self.model_path}. El bot operará aleatoriamente o no operará hasta que se entrene.")
+        except ImportError:
+            print(f"{Fore.RED}[ERROR] stable-baselines3 no está instalado. No se puede usar RL.")
+            log_terminal_event("ERROR", "RL_IMPORT", "Faltan dependencias de SB3", self.terminal_log_file_path)
+        except Exception as e:
+            print(f"{Fore.RED}[IA-RL ERROR] Error cargando modelo RL: {e}")
+            log_terminal_event("ERROR", "RL_LOAD", f"Error: {e}", self.terminal_log_file_path)
+
+    def predecir_accion(self, data_dict, current_position, current_pnl_pct):
+        """
+        Inferencia en RL. El agente requiere el estado del mercado + su estado propio.
+        Retorna la acción: 0 (Hold), 1 (Long), 2 (Short), 3 (Close)
+        """
+        if not self.trained or self.model is None:
+            return 0 # Hold si no hay modelo
+            
+        # --- NORMALIZACION EXACTA IGUAL AL ENTRENAMIENTO ---
+        vol_total = np.log1p(data_dict.get('vol_total', 0.0))
+        ofi = data_dict.get('ofi', 0.0) / 10000.0
+        ofi_ema_5 = data_dict.get('ofi_ema_5', 0.0) / 10000.0
+        ofi_ema_15 = data_dict.get('ofi_ema_15', 0.0) / 10000.0
+        cvd = data_dict.get('cvd', 0.0) / 10000.0
+        liq_longs = data_dict.get('liq_longs', 0.0) / 10000.0
+        liq_shorts = data_dict.get('liq_shorts', 0.0) / 10000.0
+        rsi_5m = (data_dict.get('rsi_5m', 50.0) - 50.0) / 50.0
+            
+        # El orden debe coincidir EXACTAMENTE con cerebro_rl_env.py observation_space
+        obs = np.array([
+            data_dict.get('imbalance', 0.0),
+            data_dict.get('spread', 0.0),
+            data_dict.get('wall_gap', 0.0),
+            vol_total,
+            ofi,
+            ofi_ema_5,
+            ofi_ema_15,
+            cvd,
+            liq_longs,
+            liq_shorts,
+            data_dict.get('ema_15m_dist', 0.0),
+            rsi_5m,
+            data_dict.get('macro_sentiment', 0.0),
+            current_position,
+            current_pnl_pct
+        ], dtype=np.float32)
+        
+        import random
+        # SB3 devuelve un tuple (action, state). Solo nos importa la accion.
+        action, _states = self.model.predict(obs, deterministic=True)
+        
+        # --- EXPLORACION FORZADA PARA RECOLECTAR SNAPSHOTS (FASE 1) ---
+        # Si la IA esta en "Hold-Collapse" por miedo a las comisiones,
+        # forzamos trades tacticos cuando hay alto desequilibrio.
+        if int(action) == 0 and current_position == 0:
+            imb = data_dict.get('imbalance', 0.0)
+            if imb > 0.65 and random.random() < 0.15:
+                return 1 # Forzar Long (Exploracion)
+            elif imb < -0.65 and random.random() < 0.15:
+                return 2 # Forzar Short (Exploracion)
+                
+        return int(action)
+
+# --- GESTOR DE EXPERIENCIA (SNAPSHOTS) ---
+class GestorExperiencia:
+    """
+    Guarda snapshots exactos del estado del mercado cuando el bot toma una decision.
+    (Hindsight Experience Replay)
+    """
+    def __init__(self, db_name="cerebro_experiencia.db"):
+        self.db_name = db_name
+        self.conn = sqlite3.connect(db_name, check_same_thread=False)
+        self.cursor = self.conn.cursor()
+        self.crear_tabla()
+
+    def crear_tabla(self):
+        self.cursor.execute('''
+            CREATE TABLE IF NOT EXISTS snapshots_rl (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                timestamp REAL,
+                accion_tomada TEXT,
+                precio_ejecucion REAL,
+                pnl_resultado REAL,
+                imbalance REAL,
+                spread REAL,
+                wall_gap REAL,
+                vol_total REAL,
+                ofi REAL,
+                ofi_ema_5 REAL,
+                ofi_ema_15 REAL,
+                cvd REAL,
+                liq_longs REAL,
+                liq_shorts REAL,
+                ema_15m_dist REAL,
+                rsi_5m REAL,
+                macro_sentiment REAL
+            )
+        ''')
+        self.conn.commit()
+
+    def guardar_snapshot(self, accion_tomada, precio_ejecucion, pnl_resultado, obs_dict):
+        try:
+            self.cursor.execute('''
+                INSERT INTO snapshots_rl (
+                    timestamp, accion_tomada, precio_ejecucion, pnl_resultado,
+                    imbalance, spread, wall_gap, vol_total, ofi, ofi_ema_5, ofi_ema_15,
+                    cvd, liq_longs, liq_shorts, ema_15m_dist, rsi_5m, macro_sentiment
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ''', (
+                time.time(), accion_tomada, precio_ejecucion, pnl_resultado,
+                obs_dict.get('imbalance', 0.0), obs_dict.get('spread', 0.0), obs_dict.get('wall_gap', 0.0),
+                obs_dict.get('vol_total', 0.0), obs_dict.get('ofi', 0.0), obs_dict.get('ofi_ema_5', 0.0),
+                obs_dict.get('ofi_ema_15', 0.0), obs_dict.get('cvd', 0.0), obs_dict.get('liq_longs', 0.0),
+                obs_dict.get('liq_shorts', 0.0), obs_dict.get('ema_15m_dist', 0.0), obs_dict.get('rsi_5m', 50.0),
+                obs_dict.get('macro_sentiment', 0.0)
+            ))
+            self.conn.commit()
+        except Exception as e:
+            print(f"{Fore.YELLOW}[EXP WARNING] No se pudo guardar snapshot: {e}")
+
+    def close(self):
+        self.conn.close()
+
+# --- GESTOR DE RIESGO (RISK MANAGER) ---
+class RiskManager:
+    """
+    Desvincula el apalancamiento de la IA. Usa el Drawdown para decidir el tamano.
+    """
+    def __init__(self, balance_inicial, max_leverage=20.0):
+        self.balance_inicial = balance_inicial
+        self.max_leverage = max_leverage
+
+    def calcular_apalancamiento(self, balance_actual):
+        # Si el balance cayo mucho, reducimos agresivamente el apalancamiento para sobrevivir (Risk Mitigation)
+        drawdown = (self.balance_inicial - balance_actual) / self.balance_inicial
+        if drawdown > 0.10: # Si perdemos el 10% del capital
+            return self.max_leverage * 0.25 # Reducir apalancamiento al 25% (ej. x5)
+        elif drawdown > 0.05:
+            return self.max_leverage * 0.50 # Reducir a la mitad (ej. x10)
+        
+        # En modo normal, usamos el maximo
+        return self.max_leverage
